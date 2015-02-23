@@ -330,7 +330,7 @@ namespace ComputeShader11
 
            //setting up the breakdown of the network
            int dispatchImageChunks = 5;
-           int dispatchNetworkChunks = 3;
+           int dispatchNetworkChunks = 5;
 
            int networkIxStart = 0;
            int imageIxStart = 0;
@@ -341,9 +341,9 @@ namespace ComputeShader11
            // Create GPUList of particles using the immediate context
            GPUList<float> sumValue = new GPUList<float>(device.ImmediateContext);
            int activationCount = networkCount * imageCount;
-           sumValue.Capacity = netChunk*imageChunk;
-           float[] az = new float[netChunk * imageChunk];
-           for (int i = 0; i < netChunk * imageChunk; i++)
+           sumValue.Capacity = activationCount;
+           float[] az = new float[activationCount];
+           for (int i = 0; i < activationCount; i++)
                az[i] = 0f;
            sumValue.AddRange(az);
 
@@ -381,19 +381,25 @@ namespace ComputeShader11
                 imageIxStart = 0;
                 for (int i = 0; i < dispatchImageChunks; i++)
                 {
-                    sw = new Stopwatch();
-                    sw.Start();
-                    WriteUIntsToBuffer(device, inputBuffer, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, imageChunk, paddedCount, imageIxStart, networkIxStart);// i*paddedCount);
+                    //sw = new Stopwatch();
+                    //sw.Start();
+                    WriteUIntsToBuffer(device, inputBuffer, 0, constBufferSizeInBytes, totalFloats, 
+                        groupsToDispatch, imageChunk, paddedCount, imageIxStart, networkIxStart, sloppyCopyIx);// i*paddedCount);
+                    
                     device.ImmediateContext.Dispatch(imageChunk, netChunk, 1);
-                    finalGPUTime += sw.ElapsedMilliseconds;
+                   
+                    //finalGPUTime += sw.ElapsedMilliseconds;
+                    
+                    sloppyCopyIx += imageChunk * netChunk;
 
-                    sw = new Stopwatch();
-                    sw.Start();
-                    //we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
-                   sumValue.CopyRangeTo(0, imageChunk * netChunk, finalCalculations, sloppyCopyIx);
-                   sloppyCopyIx += imageChunk * netChunk;
+                    //sw = new Stopwatch();
+                    //sw.Start();
+                    ////we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
+                    //sumValue.CopyRangeTo(0, imageChunk * netChunk, finalCalculations, sloppyCopyIx);
+                    //sloppyCopyIx += imageChunk * netChunk;
 
-                   copyTime += sw.ElapsedMilliseconds;
+                    //copyTime += sw.ElapsedMilliseconds;
+
                    //for(int n=0; n < netChunk; n++)
                         //sumValue.CopyRangeTo(imageChunk*n, imageChunk, finalCalculations, (networkIxStart + n) * imageCount + imageIxStart);
 
@@ -408,6 +414,14 @@ namespace ComputeShader11
                networkIxStart += netChunk;
            }
 
+            finalGPUTime = gpu.ElapsedMilliseconds;
+
+            sw = new Stopwatch();
+            sw.Start();
+            //we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
+            sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
+
+            copyTime += sw.ElapsedMilliseconds;
           
           
            //run it a bunch o' times
