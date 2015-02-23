@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?><?xml-stylesheet type='text/xsl' href='_UpgradeReport_Files/UpgradeReport.xslt'?><UpgradeLog>
+<Properties><Property Name="Solution" Value="ComputeShader11">
+</Property><Property Name="Solution File" Value="C:\Users\Paul\Downloads\ComputeShader11\ComputeShader11.sln">
+</Property><Property Name="Date" Value="Sunday, February 22, 2015">
+</Property><Property Name="Time" Value="11:04:50 AM">
+</Property></Properties><Event ErrorLevel="0" Project="ComputeShader11" Source="ComputeShader11.csproj" Description="Project converted successfully">
+</Event><Event ErrorLevel="3" Project="ComputeShader11" Source="ComputeShader11.csproj" Description="Converted">
+</Event><Event ErrorLevel="0" Project="ComputeShader11" Source="ComputeShader11.csproj" Description="Scan complete: Upgrade not required for project files.">
+</Event></UpgradeLog>
