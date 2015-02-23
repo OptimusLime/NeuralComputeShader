@@ -267,43 +267,53 @@ namespace ComputeShader11
            //uint dimensionXSize = 2;
            int computeShaderHardcodedThreadSize = 512;
            uint totalFloats = 785;
-           int doItAbunch = 1000;
+
+           int networkCount = 3000;
+           int imageCount = 60000;
+
+           uint paddedCount = (uint)(Math.Ceiling((float)totalFloats / computeShaderHardcodedThreadSize)*computeShaderHardcodedThreadSize);
+
            //uint groupsToDispatch = (uint)Math.Ceiling((float)totalFloats / (2 *computeShaderHardcodedThreadSize));
            uint groupsToDispatch = (uint)Math.Ceiling((float)totalFloats / (2 * computeShaderHardcodedThreadSize));
            //uint groupsToDispatch = 1;
 
            //at least 1
-           groupsToDispatch = Math.Min(1, groupsToDispatch);
+           groupsToDispatch = Math.Max(1, groupsToDispatch);
+
+           if(groupsToDispatch > 1)
+            Console.WriteLine("I don't believe this is verified to work with more than 1 dispatch group size right now");
 
            //set up our constant buffer with our inputs -- yazoooooooo
            int bufferIx = 0;
           
            Random r = new Random();
-           float[] weights = new float[totalFloats];
+           float[] weights = new float[paddedCount * networkCount];
            for (int i = 0; i < weights.Length; i++)
-               weights[i] = (float)r.NextDouble();
+               if (i % paddedCount < totalFloats)
+                   weights[i] = 1.0f;// (float)r.NextDouble();
 
            //copy in the weights into the constant input buffer
            GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
 
-          
-
-           // Create GPUList of particles using the immediate context
+           //Create GPUList of particles using the immediate context
            GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
 
            float sum = 0;
-           float[] allFloats = new float[totalFloats];
-           for (int i = 0; i < totalFloats; i++)
+           float[] allFloats = new float[paddedCount * imageCount];
+           for (int i = 0; i < allFloats.Length; i++)
            {
-               allFloats[i] = i + 1;
+               if (i % paddedCount < totalFloats)
+                   allFloats[i] = (i % paddedCount) + 1;
+                   //allFloats[i] = (float)r.NextDouble(); //(i % paddedCount) + 1;
            }
 
            //get ready to record these objects-- this time includes the time to copy everything
-           Stopwatch gpu = new Stopwatch();
-           gpu.Start();
+           //separate gpu clacle for setup
+           Stopwatch gpuTotal = new Stopwatch();
+           gpuTotal.Start();
 
            //add the inputs
-           Buffer inputBuffer = WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
+           Buffer inputBuffer = WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch, 0);
 
            //set the weights inside the gpu
            weightValues.AddRange(weights);
@@ -313,8 +323,12 @@ namespace ComputeShader11
 
            // Create GPUList of particles using the immediate context
            GPUList<float> sumValue = new GPUList<float>(device.ImmediateContext);
-           for (int i = 0; i < groupsToDispatch; i++)
-               sumValue.Add(0);
+           int activationCount = networkCount * imageCount;
+           sumValue.Capacity = activationCount;
+           float[] az = new float[activationCount];
+           for (int i = 0; i < activationCount; i++)
+               az[i] = 0;
+           sumValue.AddRange(az);
 
            //now set it in our gpu
            // Run the compute shader
@@ -325,15 +339,31 @@ namespace ComputeShader11
            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(sumValue.UnorderedAccess, unorderIx++);
            device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
 
-           //run it 100 times
-           for (uint i = 0; i < doItAbunch; i++)
-           {
-               WriteUIntsToBuffer(device, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, i);
-               device.ImmediateContext.Dispatch((int)groupsToDispatch, 1, 1);
-           }
+           float[] finalCalculations = new float[activationCount];
+           int chunk = 5;
+
+           //separate gpu clacle for setup
+           Stopwatch gpu = new Stopwatch();
+           gpu.Start();
+
+           Stopwatch sw = null;
+           //run it a bunch o' times
+           WriteUIntsToBuffer(device, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, (uint)imageCount, paddedCount);// i*paddedCount);
+           //device.ImmediateContext.Dispatch((int)groupsToDispatch, 1, 1);
+           device.ImmediateContext.Dispatch((int)(activationCount * groupsToDispatch), 1, 1);
 
            float finalGPUTime = gpu.ElapsedMilliseconds;
-           Console.WriteLine("GPU Summation Time: " + finalGPUTime);
+
+           sw = new Stopwatch();
+           sw.Start();
+           sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
+           float copyTime = sw.ElapsedMilliseconds;
+         
+           float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
+
+           Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime);
+           //for(int i=0; i < doItAbunch; i++)
+           //    Console.WriteLine("GPU Summation Time Inner: " + elapsed[i]);
 
 
            // Print the particles again
@@ -345,36 +375,63 @@ namespace ComputeShader11
 
            c.Start();
 
-           for (int t = 0; t < doItAbunch; t++)
+           int startIx = 0;
+
+           float[] cpuCalculations = new float[activationCount];
+           int ax = 0;
+           for (int t = 0; t < networkCount; t++)
            {
-               sum = 0;
-               for (int i = 0; i < totalFloats; i++)
+               //weights start at network start
+               int networkStart = (int)(t * paddedCount);
+
+               //for each image
+               for (int ix = 0; ix < imageCount; ix++)
                {
-                   sum += weightValues[i] * allFloats[i];
+                   int imageStart = (int)(ix * paddedCount);
+                   sum = 0;
+                   for (int i = 0; i < totalFloats; i++)
+                   {
+                       sum += weights[networkStart + i] * allFloats[imageStart + i];
+                   }
+
+                   //grab the calc for each weight/float combo sum mult
+                   cpuCalculations[ax++] = sum;
                }
+        
+               //skip ahead the padded amount -- we do the sums here
+               startIx += (int)paddedCount;
            }
 
            float finalCPUTime = c.ElapsedMilliseconds;
            Console.WriteLine("CPU Summation Time: " + finalCPUTime);
 
-           Console.WriteLine("Speedup: " + finalCPUTime / finalGPUTime);
+           Console.WriteLine("Speedup: " + finalCPUTime / absoluteTotalTime);
 
 
-           Console.WriteLine("\n\n Each Sum Value:");
-           foreach (float p in sumValue)
-               Console.WriteLine(p.ToString());
+           for (int i = 0; i < activationCount; i++)
+           {
+               bool gpuEqualsCPU = Math.Abs(cpuCalculations[i] - finalCalculations[i]) < 0.001;
+
+               Console.WriteLine("They are equal? " + (gpuEqualsCPU ? "YES" : "NO! :(") + " dif: " + Math.Abs(cpuCalculations[i] - finalCalculations[i]));
+           }
 
 
-           Console.WriteLine("\nFinal GPU Value:");
-           float f = sumValue.Sum();
-           Console.WriteLine(f);
 
-           int halfFloat = (int)totalFloats / 2;
-           //Console.WriteLine("OOps: " + allValues.Sum());// allValues.ToList().GetRange(halfFloat, halfFloat).Sum());
-           Console.WriteLine("True Sum: " + sum);
+           //Console.WriteLine("\n\n Each Sum Value:");
+           //foreach (float p in sumValue)
+           //    Console.WriteLine(p.ToString());
 
-           bool gpuEqualsCPU = Math.Abs(sum  - f) < 0.001;
-           Console.WriteLine("They are equal? " +  (gpuEqualsCPU ? "YES" : "NO! :("));
+
+           //Console.WriteLine("\nFinal GPU Value:");
+           //float f = sumValue.Sum();
+           //Console.WriteLine(f);
+
+           //int halfFloat = (int)totalFloats / 2;
+           ////Console.WriteLine("OOps: " + allValues.Sum());// allValues.ToList().GetRange(halfFloat, halfFloat).Sum());
+           //Console.WriteLine("True Sum: " + sum);
+
+           //bool gpuEqualsCPU = Math.Abs(sum  - f) < 0.001;
+           //Console.WriteLine("They are equal? " +  (gpuEqualsCPU ? "YES" : "NO! :("));
 
            allValues.ShaderResource.Dispose();
            sumValue.ShaderResource.Dispose();
