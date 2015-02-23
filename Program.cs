@@ -12,6 +12,7 @@ using GPUTools;
 using System.Collections.Generic;
 using System.Linq;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace ComputeShader11
 {
@@ -268,8 +269,8 @@ namespace ComputeShader11
            int computeShaderHardcodedThreadSize = 512;
            uint totalFloats = 785;
 
-           int networkCount = 3000;
-           int imageCount = 60000;
+           int networkCount = 300;
+           int imageCount = 60;
 
            uint paddedCount = (uint)(Math.Ceiling((float)totalFloats / computeShaderHardcodedThreadSize)*computeShaderHardcodedThreadSize);
 
@@ -379,28 +380,32 @@ namespace ComputeShader11
 
            float[] cpuCalculations = new float[activationCount];
            int ax = 0;
-           for (int t = 0; t < networkCount; t++)
-           {
-               //weights start at network start
-               int networkStart = (int)(t * paddedCount);
+           //for (int t = 0; t < networkCount; t++)
+           ParallelOptions po = new ParallelOptions();
+           po.MaxDegreeOfParallelism = 8;
 
-               //for each image
-               for (int ix = 0; ix < imageCount; ix++)
+           Parallel.For(0, networkCount, po, t =>
                {
-                   int imageStart = (int)(ix * paddedCount);
-                   sum = 0;
-                   for (int i = 0; i < totalFloats; i++)
+                   //weights start at network start
+                   int networkStart = (int)(t * paddedCount);
+
+                   //for each image
+                   for (int ix = 0; ix < imageCount; ix++)
                    {
-                       sum += weights[networkStart + i] * allFloats[imageStart + i];
+                       int imageStart = (int)(ix * paddedCount);
+                       sum = 0;
+                       for (int i = 0; i < totalFloats; i++)
+                       {
+                           sum += weights[networkStart + i] * allFloats[imageStart + i];
+                       }
+
+                       //grab the calc for each weight/float combo sum mult
+                       cpuCalculations[t*imageCount + ix] = sum;
                    }
 
-                   //grab the calc for each weight/float combo sum mult
-                   cpuCalculations[ax++] = sum;
-               }
-        
-               //skip ahead the padded amount -- we do the sums here
-               startIx += (int)paddedCount;
-           }
+                   //skip ahead the padded amount -- we do the sums here
+                   //startIx += (int)paddedCount;
+               });
 
            float finalCPUTime = c.ElapsedMilliseconds;
            Console.WriteLine("CPU Summation Time: " + finalCPUTime);
