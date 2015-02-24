@@ -170,6 +170,151 @@ namespace ComputeShader11
             //device.Dispose();
         }
 
+
+
+        int[] defaultLayerSizes = new int[] { 1000, 1000, 100, 10};
+
+        static int[] ConstructLayerDefinitions(int[] layerSizes, int inputPixelSize, int totalTestImages)
+        {
+            //plus one for implied input layer
+            int fullLayerCount = layerSizes.Length;
+            
+            //4 ints per layer
+            int[] finalDefinitions = new int[fullLayerCount * 4];
+
+            int inputStartIx = 0;
+            int weightStartIx = 0;
+            int outputStartIx = 0;
+
+            //#define LayerInputSizeIx 0
+            //#define LayerInputStartIx 1
+            //#define LayerWeightStartIx 2
+            //#define LayerOutputStartIx 3
+            for (int i = 0; i < fullLayerCount; i++)
+            {
+                int LayerInputSizeIx = 4 * i;
+                int LayerInputStartIx = 4 * i + 1;
+                int LayerWeightStartIx = 4 * i + 2;
+                int LayerOutputStartIx = 4 * i + 3;
+
+                int layerInputSize;
+                //set the number of inputs -- changes according to layer -- special case input layer
+                //mostly it's just the numbero f features in the layer above you
+                if (i == 0)
+                    //how large are the inputs for 0th layer? well the input size of course!
+                    layerInputSize = inputPixelSize;
+                else //otherwise the inputs == the featuer size of the last layer!
+                    layerInputSize = layerSizes[i - 1];
+
+                //grab the true input size
+                finalDefinitions[LayerInputSizeIx] = layerInputSize;
+
+                //input starts at particular locations -- this is basically the sum of the number of features from before
+                finalDefinitions[LayerInputStartIx] = inputStartIx;
+
+                //however, note that the 0th layer reads from the inputs, therefore it doesn't increment any counts
+                if (i != 0)
+                    inputStartIx += layerSizes[i];
+                
+
+                //where do we read the weights from?
+                finalDefinitions[LayerWeightStartIx] = weightStartIx;
+
+                //now we do some incrementing always!/
+                //the weights for each layer are laid out as such:
+                //[network{0-0}, network{0-1}, ....network{0-layerSize[0]}, network{1-0}, network{1-1}, ...network{1-layerSize[1]}...
+                //all the way to where flc = (fullLayerCount-1)  ... network{flc - 0}, network{flc - 1}, ....network{flc - layerSize[flc]}
+                //== [layer0Size X pixelInputSize, layer1Size X layer0Size, layer2Size X layer1Size, ... layer{FLC}Size x layer{FLC-1}Size
+                weightStartIx += (layerInputSize * layerSizes[i]);
+
+                //set the layer definition output start to be 
+                finalDefinitions[outputStartIx] = outputStartIx;
+
+                //increment the size of the array -- this where everything is stored!
+                outputStartIx += layerSizes[i];
+            }
+
+
+
+            return finalDefinitions;
+        }
+
+        static void MultiLayerNetwork()
+        {
+
+            Device device = new Device(DriverType.Hardware);//, DeviceCreationFlags.Debug);//, FeatureLevel.Level_11_0);
+            bool forceReload = true;
+
+            ComputeShader computeShader = Helper.LoadComputeShader(device, "MultiLayerNetworkCompute.hlsl", "runNetwork", forceReload);
+
+            if (computeShader == null)
+                return;
+
+
+            //inputs we are sending in (must be >= 4 ints for whatever reason
+            const int bufferIntCount = 8;
+            const int constBufferSizeInBytes = bufferIntCount * sizeof(int);
+
+            //add the inputs
+            Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);// WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
+
+
+            //I HAVE NO IDEA WHAT THESE NUMBERS ARE YET
+            //uint n = 32;
+            //uint dimensionXSize = 2;
+            int computeShaderHardcodedThreadSize = 512;
+            int totalFloats = 785;
+
+            int networkCount = 300;
+            int imageCount = 6000;
+
+            //pad by dispatch size -- basically - threadSize * 2
+            int paddedCount = (int)(Math.Ceiling((float)totalFloats / (2*computeShaderHardcodedThreadSize)) * 2*computeShaderHardcodedThreadSize);
+
+            //uint groupsToDispatch = (uint)Math.Ceiling((float)totalFloats / (2 *computeShaderHardcodedThreadSize));
+            int groupsToDispatch = (int)Math.Ceiling((float)totalFloats / (2 * computeShaderHardcodedThreadSize));
+            //uint groupsToDispatch = 1;
+
+            //at least 1
+            groupsToDispatch = Math.Max(1, groupsToDispatch);
+
+            if (groupsToDispatch > 1)
+                Console.WriteLine("I don't believe this is verified to work with more than 1 dispatch group size right now");
+
+            //set up our constant buffer with our inputs -- yazoooooooo
+            int bufferIx = 0;
+
+            Random r = new Random();
+            float[] weights = new float[paddedCount * networkCount];
+            for (int i = 0; i < weights.Length; i++)
+                if (i % paddedCount < totalFloats)
+                    weights[i] = (float)Math.Floor((float)i / paddedCount) + 1;// 1.0f;// (float)r.NextDouble();
+
+            //copy in the weights into the constant input buffer
+            GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
+
+            //Create GPUList of particles using the immediate context
+            GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
+
+            float sum = 0;
+            float[] allFloats = new float[paddedCount * imageCount];
+            for (int i = 0; i < allFloats.Length; i++)
+            {
+                if (i % paddedCount < totalFloats)
+                    allFloats[i] = (float)Math.Floor((float)i / paddedCount) + 1;//(i % paddedCount) + 1;
+                //allFloats[i] = (float)r.NextDouble(); //(i % paddedCount) + 1;
+            }
+
+            //get ready to record these objects-- this time includes the time to copy everything
+            //separate gpu clacle for setup
+            Stopwatch gpuTotal = new Stopwatch();
+            gpuTotal.Start();
+
+          
+
+
+        }
+
         static Buffer WriteFloatsToBuffer(Device device, int subresource, int totalByteSize, float[] values)
         {
             BufferDescription inputBufferDescription = new BufferDescription
@@ -255,7 +400,7 @@ namespace ComputeShader11
            Device device = new Device(DriverType.Hardware);//, DeviceCreationFlags.Debug);//, FeatureLevel.Level_11_0);
            bool forceReload = true;
 
-           ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceArray", forceReload);
+           ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "runNetwork", forceReload);
            //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceNonOptimal", forceReload);
            //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceNonOptimal", forceReload);
            //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "simpleMultiply", forceReload);

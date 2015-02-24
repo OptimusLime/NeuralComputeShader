@@ -1,51 +1,70 @@
+#define LayerInputSizeIx 0
+#define LayerInputStartIx 1
+#define LayerWeightStartIx 2
+#define LayerOutputStartIx 3
+
 cbuffer consts {
-	int n;
 	int dispatchDim_x;
-	int imageCount;
-	int paddingSize;
-	int imageStartIx;
-	int networkStartIx;
-	int outputStartIx;
+	int totalImageCount;
+	int totalLayerCount;
+	int currentLayerIx;
+	int currentImageIx;
+	int extra;
+	int extra2;
 	int extra3;
+
+	//max layer count of 16 for now -- easy to adjust -- minimal memory impact in constant buffer
+	int4 allLayers[16];
 };
 
+
+RWStructuredBuffer<float> image_data;
 RWStructuredBuffer<float> weight_data;
-RWStructuredBuffer<float> g_idata;
-RWStructuredBuffer<float> l2_g_data;
-RWStructuredBuffer<float> g_odata;
+RWStructuredBuffer<float> in_out_data;
 
 #define groupDim_x 512
 groupshared float sdata[groupDim_x];
 
 
-void runLayer(	uint index, 
-				uint3 threadIdx, 
+//here we simply proceed to run a layer for each thread
+void runLayer(	uint3 threadIdx, 
 				uint3 groupIdx,
+				int4 layerDefinition,
 				RWStructuredBuffer<float> inputArray,
 				RWStructuredBuffer<float> weightArray,
 				RWStructuredBuffer<float> outputArray) 
 {
 	int tid = (int)threadIdx.x;
 
-	int startWeightIx = paddingSize*(groupIdx.y + networkStartIx);
-	//paddingSize*(groupIx/imageCount + networkIx);
-	int startImageIx = paddingSize*(groupIdx.x + imageStartIx);//paddingSize*(groupIx % imageCount);
+	//what is the size of the inputs -- 785 if reading from mnist images --- or however many features at the next layers
+	int layerInputSize = layerDefinition[LayerInputSizeIx];
 
-	//groupIdx.x*(groupDim_x*2) +
-	int baseIx = index;
+	//where do we start reading our inputs
+	int input_startIx = layerDefinition[LayerInputStartIx];
 
-	int weightIx = startWeightIx + baseIx;
-	int i = startImageIx + baseIx;
+	//where are we indexed in for the beginning of our weight array
+	int weight_startIx = layerDefinition[LayerWeightStartIx];
+
+	//where do we write to for this layer?
+	int output_startIx = layerDefinition[LayerOutputStartIx];
+
+	//for each layer, input_startIx is always the same -- because we're processing the same input
+	//for weights, which weights are read is based on groupID -- that's because
+	//we launch # of groups == layer network size -- so if we have 3,000 features this layer, we dispatch 3,000 groups
+	int startWeightIx = inputLayerSize*(groupIdx.x) + weight_startIx;
+
+	int weightIx = weight_startIx + tid;
+	int inputIx = input_startIx + tid;
 
 	int dispatchSize= groupDim_x*2*dispatchDim_x;
 
-	int outputIx = outputStartIx + groupIdx.x + imageCount*groupIdx.y;
+	int outputIx = output_startIx + groupIdx.x;
 	
 	sdata[tid] = 0;
 
 	do{
-	 	sdata[tid] += weightArray[weightIx]*inputArray[i] 
-	 	+ weightArray[weightIx+groupDim_x]*inputArray[i+groupDim_x]; 
+	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] 
+	 	+ weightArray[weightIx+groupDim_x]*inputArray[inputIx+groupDim_x]; 
 
 		i += dispatchSize; 
 	} while (i < n);
@@ -110,10 +129,28 @@ void runLayer(	uint index,
 		outputArray[outputIx] = sdata[0];
 	}
 }
+
 [numthreads( groupDim_x, 1, 1)]
 void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, uint3 groupIdx: SV_GroupID)
 {
-	runLayer(index, threadIdx, groupIdx, g_idata, weight_data, g_odata);
+	//this information can change according to which layer we run -- special care is taken for the 0th -- input layer
+	RWStructuredBuffer<float> inputArray;
+	//how we are to behave this run
+	int4 layerDefinition = allLayers[currentLayerIx];
+
+	//every thread takes this path when true
+	if(currentLayerIx == 0)
+	{	
+		inputArray = image_data;
+		//we start at a particular image
+		layerDefinition[LayerInputStartIx] = currentImageIx*layerDefinition[LayerInputSizeIx];
+	}
+	else
+		inputArray = in_out_data;
+
+
+	//our arrays are set - now we must determine a little more information
+	runLayer(threadIdx, groupIdx, layerDefinition, inputArray, weight_data, in_out_data);
 }
 
 [numthreads( groupDim_x, 1, 1)]
