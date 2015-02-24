@@ -21,7 +21,8 @@ namespace ComputeShader11
         [STAThread]
         static void Main()
         {
-            MainReduce();
+            MultiLayerNetwork();
+            //MainReduce();
             //if (MainReduce())
                 //return;
 
@@ -383,10 +384,10 @@ namespace ComputeShader11
 
         //how many threads are launched for the main entry point
         //hardcoded in shader
-        static const int computeShaderHardcodedThreadSize = 512;
+        const int computeShaderHardcodedThreadSize = 512;
 
         //defined in shader as well
-        static const int MAX_LAYERS = 16;
+        const int MAX_LAYERS = 16;
 
 
         static int[] defaultLayerSizes = new int[] { 1000, 1000, 100, 10 };
