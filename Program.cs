@@ -299,7 +299,7 @@ namespace ComputeShader11
                 weightStartIx += (layerInputSize * layerSizes[i]);
 
                 //set the layer definition output start to be 
-                finalDefinitions[outputStartIx] = outputStartIx;
+                finalDefinitions[LayerOutputStartIx] = outputStartIx;
 
                 //increment the size of the array -- this where everything is stored!
                 outputStartIx += layerSizes[i];
@@ -344,7 +344,7 @@ namespace ComputeShader11
                 float[] rImage = new float[pixelCount];
 
                 for (int w = 0; w < pixelCount; w++)
-                    rImage[w] = (overwriteInput.HasValue ? overwriteInput.Value : (float)r.NextDouble());
+                    rImage[w] = (overwriteInput.HasValue ? (i+1)*overwriteInput.Value : (float)r.NextDouble());
 
                 rInputs[i] = rImage;
             }
@@ -353,7 +353,7 @@ namespace ComputeShader11
             return rInputs;
         }
 
-        static float[] DefaultRandomWeightArray(int[] layerSizes, int[] paddedSizes, int fullSize, float? overwriteWeight = null, int? seed = null)
+        static float[] DefaultRandomWeightArray(int[] layerSizes, int[] paddedSizes, int paddedInputSize, int fullSize, float? overwriteWeight = null, int? seed = null)
         {
             Random r;
             if (seed.HasValue)
@@ -369,12 +369,21 @@ namespace ComputeShader11
                 int original = layerSizes[i];
                 int padded = paddedSizes[i];
 
-                for (int w = 0; w < padded; w++)
-                    if (w < original)
-                        finalWeights[startIx + w] = (overwriteWeight.HasValue ? overwriteWeight.Value : (float)r.NextDouble());
+                int lastLayerSize = (i == 0 ? paddedInputSize : paddedSizes[i - 1]);
 
+                for (int c = 0; c < lastLayerSize; c++)
+                {
+                    for (int w = 0; w < padded; w++)
+                    {
+                        //only set weights in non-padded areas
+                        if (w < original)
+                            finalWeights[startIx] = (overwriteWeight.HasValue ? overwriteWeight.Value : (float)r.NextDouble());
+
+                        //always increment start location
+                        startIx++;
+                    }
+                }
                 //increment the layer amout and carry on!
-                startIx += padded;
             }
 
             return finalWeights;
@@ -403,7 +412,6 @@ namespace ComputeShader11
             if (computeShader == null)
                 return;
 
-
             //inputs we are sending in (must be >= 4 ints for whatever reason
             const int bufferIntCount = 8 + 4 * MAX_LAYERS;
             const int constBufferSizeInBytes = bufferIntCount * sizeof(int);
@@ -411,15 +419,14 @@ namespace ComputeShader11
             //add the inputs
             Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);// WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
 
-        
             //these are our input sizes
             int inputPixelSize = 785;
-            int totalImageCount = 100;
+            int totalImageCount = 60000;
 
             int[] layerSizes = defaultLayerSizes;
 
             //send in random input images
-            float? overwriteInputs = 2.0f;
+            float? overwriteInputs = 1.0f;
             float[][] randomInputImages = DefaultRandomInputImages(inputPixelSize, totalImageCount, overwriteInputs);
 
             //send it to shader 
@@ -461,7 +468,7 @@ namespace ComputeShader11
 
             //use our layer sizes to create a full definiton of the network that can be executed on the GPU
             //we also measure node and connection sizes with this function -- mind you these are the full padded sizes
-            int[] layerDefinitions = ConstructLayerDefinitions(paddedLayers, inputPixelSize, totalImageCount, out fullWeightArraySize, out fullInputOutputArraySize);
+            int[] layerDefinitions = ConstructLayerDefinitions(paddedLayers, paddedInputSize, totalImageCount, out fullWeightArraySize, out fullInputOutputArraySize);
 
             //finally, we create our empty node array -- this will store our network node values during network execution
             float[] inputOutputNodeValues = emptyArray(fullInputOutputArraySize);
@@ -480,7 +487,7 @@ namespace ComputeShader11
             //create a random set of weights (or choose to overwrite with default weight
             //currently useing default weight of 1 for debug purposes
             float? overWrite = 1.0f; //set to null if you want true random
-            float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, fullWeightArraySize, overWrite);
+            float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, paddedInputSize, fullWeightArraySize, overWrite);
 
             //copy in the weights into a structure weight arary -- prepare it for the correct size
             GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
@@ -508,7 +515,7 @@ namespace ComputeShader11
             //finally, set the default in/out nodes -- this might not be necessary
             networkNodeValues.AddRange(inputOutputNodeValues);
 
-
+            //Ordering of lists in shader -- should match unorderd access for directx compute shaders
             //RWStructuredBuffer<float> image_data;
             //RWStructuredBuffer<float> weight_data;
             //RWStructuredBuffer<float> in_out_data;
@@ -520,7 +527,7 @@ namespace ComputeShader11
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkNodeValues.UnorderedAccess, unorderIx++);
-            device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
+            device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, inputBufferIx);
             
             //separate gpu clacle for setup
             Stopwatch gpu = new Stopwatch();
@@ -531,8 +538,15 @@ namespace ComputeShader11
 
             float finalGPUTime = 0;
 
+            int startLayerCountIx = 0;
+
+            float[] allNodeCheck = new float[inputOutputNodeValues.Length];
+
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
             {
+                //starts at 0
+                startLayerCountIx = 0;
+
                 //we need to process this image across all layers
                 for (int currentLayerIx = 0; currentLayerIx < layerSizes.Length; currentLayerIx++)
                 {
@@ -548,6 +562,12 @@ namespace ComputeShader11
                     //dispatch a call for each layer -- no need to read in between
                     //the number of calls we make is the size of the layer for the network
                     device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
+
+                    //temp copy request
+                    //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
+
+                    //going through layer ix
+                    startLayerCountIx += paddedLayers[currentLayerIx];
                 }
             }
 
@@ -563,9 +583,13 @@ namespace ComputeShader11
 
             float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
 
-            Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime);
+            Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime + " MS Per Image: " + absoluteTotalTime/totalImageCount);
             Console.WriteLine("Now cpu calcs...");
-            
+        }
+
+        static void runCPUNetwork()
+        {
+
         }
 
         static Buffer WriteFloatsToBuffer(Device device, int subresource, int totalByteSize, float[] values)

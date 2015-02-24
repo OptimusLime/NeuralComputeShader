@@ -136,21 +136,21 @@ void runLayer(	uint3 threadIdx,
 void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, uint3 groupIdx: SV_GroupID)
 {
 	//this information can change according to which layer we run -- special care is taken for the 0th -- input layer
-	RWStructuredBuffer<float> inputArray;
 	//how we are to behave this run
 	int4 layerDefinition = allLayers[currentLayerIx];
 
 	//every thread takes this path when true
 	if(currentLayerIx == 0)
 	{	
-		inputArray = image_data;
 		//we start at a particular image
 		layerDefinition[LayerInputStartIx] = currentImageIx*layerDefinition[LayerInputSizeIx];
 	}
+
+	//our arrays are set according to layer - I would do and if/else statement and set a pointer
+	//put shader code doesn't allow this
+	if(currentLayerIx == 0)
+		runLayer(threadIdx, groupIdx, layerDefinition, image_data, weight_data, in_out_data);
 	else
-		inputArray = in_out_data;
-
-
-	//our arrays are set - now we must determine a little more information
-	runLayer(threadIdx, groupIdx, layerDefinition, inputArray, weight_data, in_out_data);
+		runLayer(threadIdx, groupIdx, layerDefinition, in_out_data, weight_data, in_out_data);
+		
 }
