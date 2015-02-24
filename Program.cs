@@ -399,7 +399,7 @@ namespace ComputeShader11
         const int MAX_LAYERS = 16;
 
 
-        static int[] defaultLayerSizes = new int[] { 1000, 1000, 100, 10 };
+        static int[] defaultLayerSizes = new int[] { 3000, 10 };
 
         static void MultiLayerNetwork()
         {
@@ -421,7 +421,7 @@ namespace ComputeShader11
 
             //these are our input sizes
             int inputPixelSize = 785;
-            int totalImageCount = 3000;
+            int totalImageCount = 60000;
 
             int[] layerSizes = defaultLayerSizes;
 
@@ -482,12 +482,10 @@ namespace ComputeShader11
             if (groupsToDispatch > 1)
                 throw new NotImplementedException("I don't believe this is verified to work with more than 1 dispatch group size right now");
 
-
-
             //create a random set of weights (or choose to overwrite with default weight
             //currently useing default weight of 1 for debug purposes
-            float? overWrite = 1.0f; //set to null if you want true random
-            //float? overWrite = null;// 1.0f; //set to null if you want true random
+            //float? overWrite = 1.0f; //set to null if you want true random
+            float? overWrite = null;// 1.0f; //set to null if you want true random
             float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, paddedInputSize, fullWeightArraySize, overWrite);
 
             //copy in the weights into a structure weight arary -- prepare it for the correct size
@@ -565,7 +563,7 @@ namespace ComputeShader11
                     device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
 
                     //temp copy request
-                    networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
+                    //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
 
                     //going through layer ix
                     startLayerCountIx += paddedLayers[currentLayerIx];
