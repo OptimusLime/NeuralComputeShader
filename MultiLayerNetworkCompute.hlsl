@@ -2,6 +2,7 @@
 #define LayerInputStartIx 1
 #define LayerWeightStartIx 2
 #define LayerOutputStartIx 3
+#define MAX_LAYERS 16
 
 cbuffer consts {
 	int dispatchDim_x;
@@ -14,7 +15,7 @@ cbuffer consts {
 	int extra3;
 
 	//max layer count of 16 for now -- easy to adjust -- minimal memory impact in constant buffer
-	int4 allLayers[16];
+	int4 allLayers[MAX_LAYERS];
 };
 
 

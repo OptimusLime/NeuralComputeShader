@@ -172,9 +172,79 @@ namespace ComputeShader11
 
 
 
-        int[] defaultLayerSizes = new int[] { 1000, 1000, 100, 10};
+        
+        #region Layer Definition Helpers
 
-        static int[] ConstructLayerDefinitions(int[] layerSizes, int inputPixelSize, int totalTestImages)
+        static int[] ConstructFullBuffer(int dispatchSize, int totalTestImages, int inputPixelSize,  int currentLayerIx, int currentImageIx, int[] layerDefinitions)
+        {
+            //need to make a new mega array -- for writing to the buffer
+            
+            //structure of the buffer at time of writing this code
+            //cbuffer consts {
+            //    int dispatchDim_x;
+            //    int totalImageCount;
+            //    int totalLayerCount;
+            //    int currentLayerIx;
+            //    int currentImageIx;
+            //    int extra;
+            //    int extra2;
+            //    int extra3;
+
+            //    //max layer count of 16 for now -- easy to adjust -- minimal memory impact in constant buffer
+            //    int4 allLayers[16];
+            //};
+
+            //start with our default information
+            var allValues = new List<int>() { 
+                dispatchSize, 
+                totalTestImages, 
+                layerDefinitions.Length / 4,
+                currentLayerIx, 
+                currentImageIx,
+                0,
+                0,
+                0
+            };
+
+            //add in the layer definitions at the end
+            allValues.AddRange(layerDefinitions);
+
+            //we're ready to submit this as an array
+            return allValues.ToArray();
+        }
+
+        static int PadInt(int val, int paddingSize)
+        {
+            return (int)(Math.Ceiling((float)val / paddingSize) *paddingSize);
+        }
+
+        static int[] PadDefaultSizes(int[] layerSize, int paddingSize)
+        {
+            int[] cloneLayers = (int[])layerSize.Clone();
+            for (int i = 0; i < cloneLayers.Length; i++)
+                cloneLayers[i] = PadInt(cloneLayers[i], paddingSize);
+            return cloneLayers;
+        }
+
+        static float[] PaddedInputArray(float[][] inputs, int paddedSizePerImage)
+        {
+            float[] finalArray = new float[paddedSizePerImage * inputs.Length];
+            int startIx = 0;
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                float[] img = inputs[i];
+                for (int w = 0; w < img.Length; w++)
+                    finalArray[startIx + w] = img[w];
+
+                startIx += paddedSizePerImage;
+            }
+
+            //all padded out!
+            return finalArray;
+        }
+
+
+        static int[] ConstructLayerDefinitions(int[] layerSizes, int inputPixelSize, int totalTestImages, out int totalWeightSize, out int totalNetworkSize)
         {
             //plus one for implied input layer
             int fullLayerCount = layerSizes.Length;
@@ -234,10 +304,92 @@ namespace ComputeShader11
                 outputStartIx += layerSizes[i];
             }
 
-
+            //these are the total sizes of both the number of nodes -- network size
+            //as well as the total number of required weights -- connection size!
+            totalWeightSize = weightStartIx;
+            totalNetworkSize = outputStartIx;
 
             return finalDefinitions;
         }
+
+        #endregion
+
+        #region Random/Empty Input Array Helpers
+
+        static float[] emptyArray(int size, float? defaultValue = null)
+        {
+            float[] finalSize = new float[size];
+            if (!defaultValue.HasValue)
+                return finalSize;
+
+            for (int i = 0; i < size; i++)
+                finalSize[i] = defaultValue.Value;
+
+            return finalSize;
+        }
+
+        //send back random input images for the looking
+        static float[][] DefaultRandomInputImages(int pixelCount, int imageCount, float? overwriteInput = null, int? seed = null)
+        {
+            Random r;
+            if (seed.HasValue)
+                r = new Random(seed.Value);
+            else
+                r = new Random();
+
+            float[][] rInputs = new float[imageCount][];
+            for (int i = 0; i < imageCount; i++)
+            {
+                float[] rImage = new float[pixelCount];
+
+                for (int w = 0; w < pixelCount; w++)
+                    rImage[w] = (overwriteInput.HasValue ? overwriteInput.Value : (float)r.NextDouble());
+
+                rInputs[i] = rImage;
+            }
+
+            //all done!
+            return rInputs;
+        }
+
+        static float[] DefaultRandomWeightArray(int[] layerSizes, int[] paddedSizes, int fullSize, float? overwriteWeight = null, int? seed = null)
+        {
+            Random r;
+            if (seed.HasValue)
+                r = new Random(seed.Value);
+            else
+                r = new Random();
+
+            float[] finalWeights = new float[fullSize];
+
+            int startIx = 0;
+            for (int i = 0; i < layerSizes.Length; i++)
+            {
+                int original = layerSizes[i];
+                int padded = paddedSizes[i];
+
+                for (int w = 0; w < padded; w++)
+                    if (w < original)
+                        finalWeights[startIx + w] = (overwriteWeight.HasValue ? overwriteWeight.Value : (float)r.NextDouble());
+
+                //increment the layer amout and carry on!
+                startIx += padded;
+            }
+
+            return finalWeights;
+        }
+
+        #endregion
+
+        //how many threads are launched for the main entry point
+        //hardcoded in shader
+        static const int computeShaderHardcodedThreadSize = 512;
+
+        //defined in shader as well
+        static const int MAX_LAYERS = 16;
+
+
+        static int[] defaultLayerSizes = new int[] { 1000, 1000, 100, 10 };
 
         static void MultiLayerNetwork()
         {
@@ -252,67 +404,167 @@ namespace ComputeShader11
 
 
             //inputs we are sending in (must be >= 4 ints for whatever reason
-            const int bufferIntCount = 8;
+            const int bufferIntCount = 8 + 4 * MAX_LAYERS;
             const int constBufferSizeInBytes = bufferIntCount * sizeof(int);
 
             //add the inputs
             Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);// WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
 
+        
+            //these are our input sizes
+            int inputPixelSize = 785;
+            int totalImageCount = 100;
 
-            //I HAVE NO IDEA WHAT THESE NUMBERS ARE YET
-            //uint n = 32;
-            //uint dimensionXSize = 2;
-            int computeShaderHardcodedThreadSize = 512;
-            int totalFloats = 785;
+            int[] layerSizes = defaultLayerSizes;
 
-            int networkCount = 300;
-            int imageCount = 6000;
+            //send in random input images
+            float? overwriteInputs = 2.0f;
+            float[][] randomInputImages = DefaultRandomInputImages(inputPixelSize, totalImageCount, overwriteInputs);
 
-            //pad by dispatch size -- basically - threadSize * 2
-            int paddedCount = (int)(Math.Ceiling((float)totalFloats / (2*computeShaderHardcodedThreadSize)) * 2*computeShaderHardcodedThreadSize);
+            //send it to shader 
+            RunShader(device, computeShader, inputBuffer, constBufferSizeInBytes,
+                inputPixelSize, totalImageCount, layerSizes, randomInputImages);
+        }
 
-            //uint groupsToDispatch = (uint)Math.Ceiling((float)totalFloats / (2 *computeShaderHardcodedThreadSize));
-            int groupsToDispatch = (int)Math.Ceiling((float)totalFloats / (2 * computeShaderHardcodedThreadSize));
-            //uint groupsToDispatch = 1;
+     
+        static void RunShader(Device device, 
+            ComputeShader computeShader, 
+            Buffer inputBuffer, 
+            int constBufferSizeInBytes,
+            int inputPixelSize,
+            int totalImageCount, 
+            int[] layerSizes, 
+            float[][] inputImages)
+        {
+            //pad by dispatch dimension size == 2*number of threads
+            //this is for efficient read purposes -- we don't want to read out of bounds, so we pad by dispatch size (stride length of shader)
+            int paddingSize = 2 * computeShaderHardcodedThreadSize;
 
-            //at least 1
-            groupsToDispatch = Math.Max(1, groupsToDispatch);
+            //what will our inputs be like padded, i wonder???
+            int paddedInputSize = PadInt(inputPixelSize, paddingSize);
 
-            if (groupsToDispatch > 1)
-                Console.WriteLine("I don't believe this is verified to work with more than 1 dispatch group size right now");
+            //now convert our input float doublearray into a single long float array
+            float[] fullPaddedInputValues = PaddedInputArray(inputImages, paddedInputSize);
+
+            //pad out the layer sizes
+            int[] paddedLayers = PadDefaultSizes(layerSizes, paddingSize);
+
+            //how much data will we load? padded values x total imagecount
+            int totalInputCapacity = fullPaddedInputValues.Length;
+
+            //how many connections do we need for this big object
+            int fullWeightArraySize = 0;
+
+            //how many nodes exist inside the network?
+            int fullInputOutputArraySize = 0;
+
+            //use our layer sizes to create a full definiton of the network that can be executed on the GPU
+            //we also measure node and connection sizes with this function -- mind you these are the full padded sizes
+            int[] layerDefinitions = ConstructLayerDefinitions(paddedLayers, inputPixelSize, totalImageCount, out fullWeightArraySize, out fullInputOutputArraySize);
+
+            //finally, we create our empty node array -- this will store our network node values during network execution
+            float[] inputOutputNodeValues = emptyArray(fullInputOutputArraySize);
 
             //set up our constant buffer with our inputs -- yazoooooooo
-            int bufferIx = 0;
+            int inputBufferIx = 0;
 
-            Random r = new Random();
-            float[] weights = new float[paddedCount * networkCount];
-            for (int i = 0; i < weights.Length; i++)
-                if (i % paddedCount < totalFloats)
-                    weights[i] = (float)Math.Floor((float)i / paddedCount) + 1;// 1.0f;// (float)r.NextDouble();
+            //how many dispatches? Only every 1 at a time (so we say)
+            int groupsToDispatch = 1;
 
-            //copy in the weights into the constant input buffer
+            if (groupsToDispatch > 1)
+                throw new NotImplementedException("I don't believe this is verified to work with more than 1 dispatch group size right now");
+
+
+
+            //create a random set of weights (or choose to overwrite with default weight
+            //currently useing default weight of 1 for debug purposes
+            float? overWrite = 1.0f; //set to null if you want true random
+            float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, fullWeightArraySize, overWrite);
+
+            //copy in the weights into a structure weight arary -- prepare it for the correct size
             GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
+            weightValues.Capacity = randomWeights.Length;
 
             //Create GPUList of particles using the immediate context
-            GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
+            GPUList<float> inputImageValues = new GPUList<float>(device.ImmediateContext);
+            inputImageValues.Capacity = totalInputCapacity;
 
-            float sum = 0;
-            float[] allFloats = new float[paddedCount * imageCount];
-            for (int i = 0; i < allFloats.Length; i++)
-            {
-                if (i % paddedCount < totalFloats)
-                    allFloats[i] = (float)Math.Floor((float)i / paddedCount) + 1;//(i % paddedCount) + 1;
-                //allFloats[i] = (float)r.NextDouble(); //(i % paddedCount) + 1;
-            }
+            //finally, we create the network node array
+            GPUList<float> networkNodeValues = new GPUList<float>(device.ImmediateContext);
+            networkNodeValues.Capacity = fullInputOutputArraySize;
 
             //get ready to record these objects-- this time includes the time to copy everything
             //separate gpu clacle for setup
             Stopwatch gpuTotal = new Stopwatch();
             gpuTotal.Start();
 
-          
+            //set ALL of the input images -- in reality -- this call is made ONCE for all networks ever
+            inputImageValues.AddRange(fullPaddedInputValues);
+
+            //set the weights inside the gpu -- this is for the full network
+            weightValues.AddRange(randomWeights);
+
+            //finally, set the default in/out nodes -- this might not be necessary
+            networkNodeValues.AddRange(inputOutputNodeValues);
 
 
+            //RWStructuredBuffer<float> image_data;
+            //RWStructuredBuffer<float> weight_data;
+            //RWStructuredBuffer<float> in_out_data;
+
+            //now set the memory for our gpu shader -- in correct order - image, weight, in_out
+            //Run the compute shader
+            device.ImmediateContext.ComputeShader.Set(computeShader);
+            int unorderIx = 0;
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageValues.UnorderedAccess, unorderIx++);
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkNodeValues.UnorderedAccess, unorderIx++);
+            device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
+            
+            //separate gpu clacle for setup
+            Stopwatch gpu = new Stopwatch();
+            gpu.Start();
+
+            Stopwatch sw = null;
+            float copyTime = 0;
+
+            float finalGPUTime = 0;
+
+            for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
+            {
+                //we need to process this image across all layers
+                for (int currentLayerIx = 0; currentLayerIx < layerSizes.Length; currentLayerIx++)
+                {
+                    //how many actual nodes are here -- not whats padded in memory
+                    int trueLayerSize = layerSizes[currentLayerIx];
+
+                    //what information do we need to send into the constant buffer to make sure it's correct
+                    int[] fullInputBuffer = ConstructFullBuffer(groupsToDispatch, totalImageCount, paddedInputSize, currentLayerIx, currentImageIx, layerDefinitions);
+
+                    //write layer information into the GPU again and again! It needs to know current imnage and current layer
+                    WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+
+                    //dispatch a call for each layer -- no need to read in between
+                    //the number of calls we make is the size of the layer for the network
+                    device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
+                }
+            }
+
+            finalGPUTime = gpu.ElapsedMilliseconds;
+
+            sw = new Stopwatch();
+            sw.Start();
+
+            //we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
+            //sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
+
+            copyTime += sw.ElapsedMilliseconds;
+
+            float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
+
+            Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime);
+            Console.WriteLine("Now cpu calcs...");
+            
         }
 
         static Buffer WriteFloatsToBuffer(Device device, int subresource, int totalByteSize, float[] values)
@@ -370,7 +622,12 @@ namespace ComputeShader11
             return new Buffer(device, inputBufferDescription);
 
         }
-       static Buffer WriteUIntsToBuffer(Device device, Buffer inputBuffer, int subresource, int totalByteSize, params int[] values)
+        static Buffer WriteUIntsToBuffer(Device device, Buffer inputBuffer, int subresource, int totalByteSize, params int[] values)
+        {
+            return WriteUIntArrayToBuffer(device, inputBuffer, subresource, totalByteSize, values);
+        }
+
+       static Buffer WriteUIntArrayToBuffer(Device device, Buffer inputBuffer, int subresource, int totalByteSize, int[] values)
         {
             DataBox input = device.ImmediateContext.MapSubresource(inputBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
 
