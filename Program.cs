@@ -376,7 +376,7 @@ namespace ComputeShader11
                     for (int w = 0; w < padded; w++)
                     {
                         //only set weights in non-padded areas
-                        if (w < original)
+                        if (w < original) //(c + 1)*
                             finalWeights[startIx] = (overwriteWeight.HasValue ? overwriteWeight.Value : (float)r.NextDouble());
 
                         //always increment start location
@@ -421,7 +421,7 @@ namespace ComputeShader11
 
             //these are our input sizes
             int inputPixelSize = 785;
-            int totalImageCount = 60000;
+            int totalImageCount = 3000;
 
             int[] layerSizes = defaultLayerSizes;
 
@@ -487,6 +487,7 @@ namespace ComputeShader11
             //create a random set of weights (or choose to overwrite with default weight
             //currently useing default weight of 1 for debug purposes
             float? overWrite = 1.0f; //set to null if you want true random
+            //float? overWrite = null;// 1.0f; //set to null if you want true random
             float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, paddedInputSize, fullWeightArraySize, overWrite);
 
             //copy in the weights into a structure weight arary -- prepare it for the correct size
@@ -564,7 +565,7 @@ namespace ComputeShader11
                     device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
 
                     //temp copy request
-                    //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
+                    networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
 
                     //going through layer ix
                     startLayerCountIx += paddedLayers[currentLayerIx];
@@ -584,12 +585,93 @@ namespace ComputeShader11
             float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
 
             Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime + " MS Per Image: " + absoluteTotalTime/totalImageCount);
+           
             Console.WriteLine("Now cpu calcs...");
+            ParallelOptions po = new ParallelOptions();
+            po.MaxDegreeOfParallelism = 8;
+            po.MaxDegreeOfParallelism = 1;
+
+
+            float cpuTime = runCPUNetwork(inputImages, paddedInputSize, randomWeights, inputOutputNodeValues, layerSizes, paddedLayers, po);
+
+
+            Console.WriteLine("Speedup: " + cpuTime / absoluteTotalTime);
+            Console.WriteLine("Speedup Test Complete");
         }
 
-        static void runCPUNetwork()
+        static float runCPUNetwork(float[][] inputImages, int paddedInputSize, 
+            float[] weights, float[] inputOutNodeValues, 
+            int[] layers, int[] paddedLayers, 
+            ParallelOptions po)
         {
+            //stop watch please!
+            Stopwatch cpuSW = new Stopwatch();
+            cpuSW.Start();
 
+            int weightStartIx = 0;
+            int nodeStartIx = 0;
+            int nodeOutputIx = 0;
+
+            for (int i = 0; i < inputImages.Length; i++)
+            {
+                nodeStartIx = 0;
+                weightStartIx = 0;
+                nodeOutputIx = 0;
+
+                for (int c = 0; c < layers.Length; c++)
+                {
+                    //read in the inputs
+                    //if we're the input layer, we do things a little different -- read from a different array
+                    float[] layerInputs = (c != 0 ? inputOutNodeValues : inputImages[i]);
+
+                    int iPaddedSize = (c != 0 ? paddedLayers[c - 1] : paddedInputSize);
+
+                    //size of the layer we need to loop over
+                    int layerSize = layers[c];
+                    int paddedLayerSize = paddedLayers[c];
+
+                    int inputLoopSize = Math.Min(iPaddedSize, layerInputs.Length);
+                    
+                    //increment before the output process
+                    if(c!= 0)
+                        nodeOutputIx += paddedLayerSize;
+
+                    //do this in parallel
+                    Parallel.For(0, layerSize, po, l =>
+                    //for (int l = 0; l < layerSize; l++)
+                    {
+                        //correct
+                        //weight start -- keep incrementing with padded size
+                        int weightBegin = weightStartIx + l * iPaddedSize;
+
+
+                        float sum = 0;
+                        //now multiply inputs by other things
+                        for (int w = 0; w < inputLoopSize; w++)
+                        {
+                            //now loop through and multiple
+                            sum += layerInputs[nodeStartIx + w] * weights[weightBegin + w];
+                        }
+
+                        //set the input/output!
+                        inputOutNodeValues[nodeOutputIx + l] = sum;
+                    });
+
+                    //increment please! Only if we're not the first layer though -- we use different input
+                    if(c!=0)
+                        nodeStartIx += paddedLayerSize;
+
+                    //now make sure to update our weight start ix
+                    weightStartIx += paddedLayerSize * iPaddedSize;
+                }
+            }
+
+
+            float finalCPUTime = cpuSW.ElapsedMilliseconds;
+
+            Console.WriteLine("CPU Summation Time: " + finalCPUTime);
+
+            return finalCPUTime;
         }
 
         static Buffer WriteFloatsToBuffer(Device device, int subresource, int totalByteSize, float[] values)
