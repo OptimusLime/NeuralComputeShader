@@ -273,8 +273,8 @@ namespace ComputeShader11
            int computeShaderHardcodedThreadSize = 512;
            int totalFloats = 785;
 
-           int networkCount = 3000;
-           int imageCount = 60000;
+           int networkCount = 300;
+           int imageCount = 6000;
 
            int paddedCount = (int)(Math.Ceiling((float)totalFloats / computeShaderHardcodedThreadSize)*computeShaderHardcodedThreadSize);
 
