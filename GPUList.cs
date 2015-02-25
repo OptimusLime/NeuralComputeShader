@@ -64,6 +64,37 @@ namespace GPUTools
             this.AddRange(data);
         }
 
+        public Buffer CreateStagingBuffer()
+        {
+            int dataSize = Marshal.SizeOf(typeof(T));
+            return new Buffer(context.Device, dataSize * count, ResourceUsage.Staging,
+                BindFlags.None, CpuAccessFlags.Read, ResourceOptionFlags.None, 0);
+        }
+
+        Buffer stagingBuffer = null;
+        int bufferCount;
+        public Buffer GetStagingBuffer()
+        {
+            if (stagingBuffer != null && count == bufferCount)
+            {
+                return stagingBuffer;
+            }
+            else if (stagingBuffer != null && count != bufferCount)
+                DestroyStagingBuffer();
+
+            //create a staging buffer ONLY ONCE for a given size
+            stagingBuffer = CreateStagingBuffer();
+            bufferCount = count;
+
+            //send it back
+            return stagingBuffer;
+        }
+        public void DestroyStagingBuffer()
+        {
+            stagingBuffer.Dispose();
+            stagingBuffer = null;
+        }
+
         /// <summary>
         /// Gets the DeviceContext on which to perform all operations
         /// </summary>
@@ -298,19 +329,21 @@ namespace GPUTools
                 throw new IndexOutOfRangeException();
 
             int dataSize = Marshal.SizeOf(typeof(T));
-            Buffer stagingBuffer = new Buffer(context.Device, dataSize * count, ResourceUsage.Staging,
-                BindFlags.None, CpuAccessFlags.Read, ResourceOptionFlags.None, 0);
+            //Buffer stagingBuffer = new Buffer(context.Device, dataSize * count, ResourceUsage.Staging,
+            //    BindFlags.None, CpuAccessFlags.Read, ResourceOptionFlags.None, 0);
+            Buffer bufferToUse = GetStagingBuffer();
+
 
             context.CopySubresourceRegion(buffer, 0,
                 new ResourceRegion(dataSize * index, 0, 0, dataSize * (index + count), 1, 1),
-                stagingBuffer, 0, 0, 0, 0);
+                bufferToUse, 0, 0, 0, 0);
 
-            DataBox box = context.MapSubresource(stagingBuffer, 
+            DataBox box = context.MapSubresource(bufferToUse, 
                 MapMode.Read, SlimDX.Direct3D11.MapFlags.None);
             box.Data.ReadRange<T>(array, arrayIndex, count);
-            context.UnmapSubresource(stagingBuffer, 0);
+            context.UnmapSubresource(bufferToUse, 0);
 
-            stagingBuffer.Dispose();
+            //stagingBuffer.Dispose();
         }
 
         /// <summary>
@@ -440,6 +473,8 @@ namespace GPUTools
         public void Dispose()
         {
             setCapacity(0);
+            if (stagingBuffer != null)
+                DestroyStagingBuffer();
         }
 
         #endregion

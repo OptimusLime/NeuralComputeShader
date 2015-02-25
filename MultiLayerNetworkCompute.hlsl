@@ -21,8 +21,8 @@ cbuffer consts {
 cbuffer backprop {
 	float bpLearningRate;
 	float bpMomentum;
-	float extra1;
-	float extra2;
+	float correctTarget;
+	float incorrectTarget;
 };
 
 
@@ -33,6 +33,7 @@ RWStructuredBuffer<float> node_error_data;
 
 #define groupDim_x 512
 groupshared float sdata[groupDim_x];
+groupshared int mdata[groupDim_x];
 
 void finishSharedDataSum(int tid, RWStructuredBuffer<float> outputArray, int outputIx)
 {
@@ -266,6 +267,213 @@ void propogateErrorDeltas(
 		weightIx += dispatchSize; 
 
 	} while (inputIx < input_startIx + layerInputSize);
+}
+
+void parallelMax(	
+				uint3 threadIdx, 
+				uint3 groupIdx)
+{
+	//we need to figure out the max across a number of individuals
+	int checkCount = 0;
+	float lastCheck, vOne, vTwo;
+	float bBest;
+	int lastIx;
+	int bestIx;
+	int readInputIx = inputIx;
+	int writeInputIx = inputIx;
+
+	//we will read two inputs at a time -- then decide which is better and store that index/value
+	//we will continue to read them against each other and choose max, until we have a final ix as max
+	//then we compare against max -- and set the errors accordingly
+
+	do{
+		vOne = inputArray[readInputIx];
+		vTwo = inputArray[readInputIx+groupDim_x];
+
+		bestIx = (vTwo > vOne ? readInputIx+groupDim_x : readInputIx);
+		fBest = (vTwo > vOne ? vTwo : vOne);
+
+		if(checkCount > 0)
+		{
+			mdata[tid] =  (lastCheck > fBest ? lastIx : bestIx);
+			sdata[tid] =  (lastCheck > fBest ? lastCheck : fBest);
+		}
+		else{
+		 	mdata[tid] = (vTwo > vOne ? readInputIx+groupDim_x : readInputIx);
+		 	sdata[tid] = (vTwo > vOne ? vTwo : vOne);
+		}
+
+	 	lastCheck = fBest;
+	 	lastIx = bestIx;
+
+		readInputIx += dispatchSize; 
+
+	} while (readInputIx < inputsFinished);
+	
+	//sync up -- now we have to reduce our mdata/sdata according to maximums
+	GroupMemoryBarrierWithGroupSync();
+	float sd, sd2;
+	if (groupDim_x>= 512) { 
+	if (tid < 256) { 
+		sd = sdata[tid]; sd2 = sdata[tid + 256];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 256]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+	} GroupMemoryBarrierWithGroupSync(); }
+	
+	if (groupDim_x >= 256) { if (tid < 128) { sd = sdata[tid]; sd2 = sdata[tid + 128];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 128]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}} GroupMemoryBarrierWithGroupSync(); }
+	
+	if (groupDim_x >= 128) { 
+		if (tid < 64) { 
+			sd = sdata[tid]; sd2 = sdata[tid + 64];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 64]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		} 
+		GroupMemoryBarrierWithGroupSync(); 
+	}
+	
+
+	if (groupDim_x >= 64){
+		if (tid < 32){
+			sd = sdata[tid]; sd2 = sdata[tid + 32];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 32]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		}
+		//GroupMemoryBarrierWithGroupSync(); 
+	}
+
+	if (groupDim_x >= 32){
+		if (tid < 16){
+			sd = sdata[tid]; sd2 = sdata[tid + 16];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 16]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		}
+		//GroupMemoryBarrierWithGroupSync(); 
+	}
+
+	if (groupDim_x >= 16){
+		if (tid < 8){
+			sd = sdata[tid]; sd2 = sdata[tid + 8];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 8]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		}
+		//GroupMemoryBarrierWithGroupSync(); 
+	}
+
+	if (groupDim_x >= 8){
+		if (tid < 4){
+			sd = sdata[tid]; sd2 = sdata[tid + 4];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 4]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		}
+		//GroupMemoryBarrierWithGroupSync(); 
+	}
+
+	if (groupDim_x >= 4){
+		if (tid < 2){
+			sd = sdata[tid]; sd2 = sdata[tid + 2];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 2]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		}
+		//GroupMemoryBarrierWithGroupSync(); 
+	}
+
+	if (groupDim_x >= 2){
+		if (tid < 1){
+			sd = sdata[tid]; sd2 = sdata[tid + 1];
+		if(sd2 > sd)
+		{
+			sdata[tid] = sd2;
+			mdata[tid] = mdata[tid + 1]
+		}
+		else
+		{
+			sdata[tid] = sd;
+			mdata[tid] = mdata[tid ]
+		}
+		}
+		//GroupMemoryBarrierWithGroupSync(); 
+	}
+	
+	//when all is said and done mdata[0] is the max index! 
+	GroupMemoryBarrierWithGroupSync(); 
+
+	int maxIx = mdata[0];
+
+	//now we can set error for each input!
+	do{
+		outputArray[outputIx] = (writeInputIx == maxIx ? correctTarget : incorrectTarget);
+		outputArray[outputIx + groupDim_x] = (writeInputIx + groupDim_x == maxIx ? correctTarget : incorrectTarget);
+
+		writeInputIx += dispatchSize; 
+		outputIx += dispatchSize; 
+
+	} while (writeInputIx < inputsFinished);
 }
 
 [numthreads( groupDim_x, 1, 1)]

@@ -513,7 +513,7 @@ namespace ComputeShader11
         const int MAX_LAYERS = 16;
 
 
-        static int[] defaultLayerSizes = new int[] { 100, 100, 10 };
+        static int[] defaultLayerSizes = new int[] { 3000, 10 };
 
         static void MultiLayerNetwork()
         {
@@ -541,7 +541,7 @@ namespace ComputeShader11
 
             //these are our input sizes
             int inputPixelSize = 785;
-            int totalImageCount = 100;
+            int totalImageCount = 5000;
 
             int[] layerSizes = defaultLayerSizes;
 
@@ -648,6 +648,7 @@ namespace ComputeShader11
 
             //finally, set the default in/out nodes -- this might not be necessary
             networkNodeValues.AddRange(inputOutputNodeValues);
+
             //copy in for backprop nodes as well
             backpropErrorNodeValues.AddRange(inputOutputNodeValues);
 
@@ -704,93 +705,104 @@ namespace ComputeShader11
                 //starts at 0
                 startLayerCountIx = 0;
 
-                //we need to process this image across all layers
-                for (int currentLayerIx = 0; currentLayerIx < layerSizes.Length; currentLayerIx++)
+                if (true)
                 {
-                    //how many actual nodes are here -- not whats padded in memory
-                    int trueLayerSize = layerSizes[currentLayerIx];
+                    //we need to process this image across all layers
+                    for (int currentLayerIx = 0; currentLayerIx < layerSizes.Length; currentLayerIx++)
+                    {
+                        //how many actual nodes are here -- not whats padded in memory
+                        int trueLayerSize = layerSizes[currentLayerIx];
 
-                    //not backprop
-                    backpropState = 0;
+                        //not backprop
+                        backpropState = 0;
 
-                    //what information do we need to send into the constant buffer to make sure it's correct
-                    fullInputBuffer = ConstructFullBuffer(
-                                                    groupsToDispatch, 
-                                                    totalImageCount, 
-                                                    paddedInputSize, 
-                                                    currentLayerIx, 
-                                                    currentImageIx, 
-                                                    backpropState,
-                                                    paddedLayers[currentLayerIx], //send in the padded size of this particular layer
-                                                    finalPaddedOutputCount,
-                                                    layerDefinitions);
+                        //what information do we need to send into the constant buffer to make sure it's correct
+                        fullInputBuffer = ConstructFullBuffer(
+                                                        groupsToDispatch,
+                                                        totalImageCount,
+                                                        paddedInputSize,
+                                                        currentLayerIx,
+                                                        currentImageIx,
+                                                        backpropState,
+                                                        paddedLayers[currentLayerIx], //send in the padded size of this particular layer
+                                                        finalPaddedOutputCount,
+                                                        layerDefinitions);
 
-                    //write layer information into the GPU again and again! It needs to know current imnage and current layer
-                    WriteUIntArrayToBuffer(device, inputBuffer, subIx++, constBufferSizeInBytes, fullInputBuffer);
+                        //write layer information into the GPU again and again! It needs to know current imnage and current layer
+                        WriteUIntArrayToBuffer(device, inputBuffer, subIx++, constBufferSizeInBytes, fullInputBuffer);
 
-                    //dispatch a call for each layer -- no need to read in between
-                    //the number of calls we make is the size of the layer for the network
-                    device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
+                        //dispatch a call for each layer -- no need to read in between
+                        //the number of calls we make is the size of the layer for the network
+                        device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
 
-                    //temp copy request
-                    //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
-                    //backpropErrorNodeValues.CopyRangeTo(startLayerCountIx, paddedLayers[currentLayerIx], allNodeCheck, startLayerCountIx);
-                    //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
-                    //DEBUG
-                    //networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                        //temp copy request
+                        //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
+                        //backpropErrorNodeValues.CopyRangeTo(startLayerCountIx, paddedLayers[currentLayerIx], allNodeCheck, startLayerCountIx);
+                        //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                        //DEBUG
+                        //networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
-                    //going through layer ix
-                    startLayerCountIx += paddedLayers[currentLayerIx];
+                        //going through layer ix
+                        startLayerCountIx += paddedLayers[currentLayerIx];
+                    }
                 }
+                if (false)
+                {
+                    if (true)
+                    {
+                        //now we copy the image outputs from the nodes -- then set the node error. 
+                        networkNodeValues.CopyRangeTo(fullInputOutputArraySize - finalPaddedOutputCount, trueOutputCount, networkOutputs, 0);
+                    }
+                    //select the max node -- that's the victor!
+                    int chosenIx = MaxValue(networkOutputs);
 
-                //now we copy the image outputs from the nodes -- then set the node error. 
-                networkNodeValues.CopyRangeTo(fullInputOutputArraySize - finalPaddedOutputCount, trueOutputCount, networkOutputs, 0);
+                    //determine if it's right/wrong -- what the correct targets are
+                    //this is fake for now
+                    float[] corrections = emptyArray(networkOutputs.Length, 1.0f);//CorrectFloatErrors(networkOutputs, 0, networkOutputs[0] + 1, networkOutputs[0]+1);
+                    //corrections[0] = 1.0f;
 
-                //select the max node -- that's the victor!
-                int chosenIx = MaxValue(networkOutputs);
-
-                //determine if it's right/wrong -- what the correct targets are
-                //this is fake for now
-                float[] corrections = emptyArray(networkOutputs.Length, 1.0f);//CorrectFloatErrors(networkOutputs, 0, networkOutputs[0] + 1, networkOutputs[0]+1);
-                //corrections[0] = 1.0f;
-
-                //now copy into the network errors
-                backpropErrorNodeValues.SetRange(fullInputOutputArraySize - finalPaddedOutputCount, corrections, 0, trueOutputCount);
-
+                    if (false)
+                    {
+                        //now copy into the network errors
+                        backpropErrorNodeValues.SetRange(fullInputOutputArraySize - finalPaddedOutputCount, corrections, 0, trueOutputCount);
+                    }
+                }
                 //here we run the network backwards to calculate all errors across the nodes
                 backpropState = 1;
-                
-                //we have processed the iamges going forward, now we propogate going backwards!!!
-                for (int currentLayerIx = layerSizes.Length - 1; currentLayerIx > 0; currentLayerIx--)
+                if (true)
                 {
-                    //step 1, set up the input buffer
-                    //what information do we need to send into the constant buffer to make sure it's correct
-                    fullInputBuffer = ConstructFullBuffer(
-                                                    groupsToDispatch,
-                                                    totalImageCount,
-                                                    paddedInputSize,
-                                                    currentLayerIx,
-                                                    currentImageIx,
-                                                    backpropState,
-                                                    paddedLayers[currentLayerIx], //send in the padded size of this particular layer
-                                                    finalPaddedOutputCount,
-                                                    backpropLayerDefinitions);
+                    //we have processed the iamges going forward, now we propogate going backwards!!!
+                    for (int currentLayerIx = layerSizes.Length - 1; currentLayerIx > 0; currentLayerIx--)
+                    {
+                        //step 1, set up the input buffer
+                        //what information do we need to send into the constant buffer to make sure it's correct
+                        fullInputBuffer = ConstructFullBuffer(
+                                                        groupsToDispatch,
+                                                        totalImageCount,
+                                                        paddedInputSize,
+                                                        currentLayerIx,
+                                                        currentImageIx,
+                                                        backpropState,
+                                                        paddedLayers[currentLayerIx], //send in the padded size of this particular layer
+                                                        finalPaddedOutputCount,
+                                                        backpropLayerDefinitions);
 
-                    //step 2, write layer information into the GPU again and again! It needs to know current imnage and current layer
-                    WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+                        //step 2, write layer information into the GPU again and again! It needs to know current imnage and current layer
+                        WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
 
-                    //the actual previous layer size -- this will determine how many groups to run
-                    int previousLayerSize = layerSizes[currentLayerIx -1];
+                        //the actual previous layer size -- this will determine how many groups to run
+                        int previousLayerSize = layerSizes[currentLayerIx - 1];
 
-                    //step 3, run the network for this layer
-                    //dispatch a call for each layer -- no need to read in between
-                    //the number of calls we make is the size of the previous layer for the network
-                    device.ImmediateContext.Dispatch(previousLayerSize, 1, 1);
+                        //step 3, run the network for this layer
+                        //dispatch a call for each layer -- no need to read in between
+                        //the number of calls we make is the size of the previous layer for the network
+                        device.ImmediateContext.Dispatch(previousLayerSize, 1, 1);
 
-                    //check health of network -- debugging purposes -- read all the backprop nodes
-                    //DEBUG
-                    //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                        //check health of network -- debugging purposes -- read all the backprop nodes
+                        //DEBUG
+                        //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
+                    }
                 }
 
                 //the final piece is to run 1 final update -- with as many groups as there are weights
