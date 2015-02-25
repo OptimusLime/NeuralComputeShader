@@ -454,7 +454,7 @@ namespace ComputeShader11
                     for (int c = 0; c < lastLayerSize; c++)
                     {
                         if(c < lastTrueLayerSize)
-                            finalWeights[startIx] = (overwriteWeight.HasValue ? (c+1)*overwriteWeight.Value/lastLayerSize : (float)r.NextDouble());
+                            finalWeights[startIx] = (overwriteWeight.HasValue ? (c+1)*overwriteWeight.Value : (float)r.NextDouble());
 
                         //always increment start location
                          startIx++;
@@ -694,6 +694,9 @@ namespace ComputeShader11
             //    throw new Exception("Incorrect breakdown of blocks being sent at last stage of backprop");
             int[] fullInputBuffer;
             float[] networkOutputs = new float[trueOutputCount];
+            //DEBUG
+            //float[] weightCheck = new float[randomWeights.Length];
+
             int backpropState = 0;
             int subIx = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
@@ -733,7 +736,8 @@ namespace ComputeShader11
                     //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
                     //backpropErrorNodeValues.CopyRangeTo(startLayerCountIx, paddedLayers[currentLayerIx], allNodeCheck, startLayerCountIx);
                     //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
-                    networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                    //DEBUG
+                    //networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
                     //going through layer ix
                     startLayerCountIx += paddedLayers[currentLayerIx];
@@ -748,6 +752,7 @@ namespace ComputeShader11
                 //determine if it's right/wrong -- what the correct targets are
                 //this is fake for now
                 float[] corrections = emptyArray(networkOutputs.Length, 1.0f);//CorrectFloatErrors(networkOutputs, 0, networkOutputs[0] + 1, networkOutputs[0]+1);
+                //corrections[0] = 1.0f;
 
                 //now copy into the network errors
                 backpropErrorNodeValues.SetRange(fullInputOutputArraySize - finalPaddedOutputCount, corrections, 0, trueOutputCount);
@@ -783,13 +788,26 @@ namespace ComputeShader11
                     device.ImmediateContext.Dispatch(previousLayerSize, 1, 1);
 
                     //check health of network -- debugging purposes -- read all the backprop nodes
-                    backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                    //DEBUG
+                    //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
                 }
 
                 //the final piece is to run 1 final update -- with as many groups as there are weights
                 //this will run a calculate to update the weights
                 backpropState = 2;
+
+                //DEBUG -- zero out anything non zero
+                //allNodeCheck = allNodeCheck.Select(x => (x != 0 ? 1.0f : 0.0f)).ToArray();
+                //allNodeCheck = allNodeCheck.Select(x => 0.0f).ToArray();
+                //allNodeCheck[0] = 1.0f;
+                //allNodeCheck[1] = -2.0f;
+                //backpropErrorNodeValues.SetRange(0, allNodeCheck, 0, allNodeCheck.Length);
+                ////allNodeCheck = allNodeCheck.Select(x => (x != 0 ? 2.0f : 0.0f)).ToArray();
+                //allNodeCheck = allNodeCheck.Select(x => 0.0f).ToArray();
+                //allNodeCheck[0] = 2.0f;
+                //allNodeCheck[1] = -2.0f;
+                //networkNodeValues.SetRange(0, allNodeCheck, 0, allNodeCheck.Length);
 
                 //create the layer definitions to be send in to finish up backprop weight propogation
                 fullInputBuffer = ConstructFullBuffer(
@@ -813,6 +831,10 @@ namespace ComputeShader11
                 //dispatch a call for each layer -- no need to read in between
                 //the number of calls we make is the size of the previous layer for the network
                 device.ImmediateContext.Dispatch(fullInputOutputArraySize, 1, 1);
+
+                //DEBUG
+                //weightValues.CopyRangeTo(0, weightCheck.Length, weightCheck, 0);
+
             }
 
             finalGPUTime = gpu.ElapsedMilliseconds;

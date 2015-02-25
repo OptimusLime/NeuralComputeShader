@@ -185,13 +185,13 @@ void calculateLayerError(
 	//where do we write to for this layer?
 	int output_startIx = layerDefinition[LayerOutputStartIx];
 
-	//for each layer, input_startIx is always the same -- because we're processing the same input
-	//for weights, which weights are read is based on groupID -- that's because
-	//we launch # of groups == layer network size -- so if we have 3,000 features this layer, 
-	//we dispatch 3,000 groups
-	int startWeightIx = layerInputSize*(groupIdx.x) + weight_startIx;
+	//For backprop, we're reading ACROSS networks -- therefore each groupID represents
+	//the weight location to read from across featurse 
+	//that is if you're propograting weights for node 0 in the layer
+	//look at 0, 0+layerSize, 0 + 2*layerSize ... etc
+	int startWeightIx = (groupIdx.x) + weight_startIx;
 
-	int weightIx = startWeightIx + tid;
+	int weightIx = startWeightIx + layerInputSize*tid;
 	int inputIx = input_startIx + tid;
 
 	int dispatchSize= groupDim_x*2*dispatchDim_x;
