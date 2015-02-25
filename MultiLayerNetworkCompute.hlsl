@@ -95,6 +95,15 @@ void finishSharedDataSum(int tid, RWStructuredBuffer<float> outputArray, int out
 	}
 }
 
+//printing trick -- put inside read loop of layer to printout stuff
+//if(groupIdx.x == 0)
+//{
+//	count++;
+//	node_error_data[tid] = weightArray[weightIx];
+//}
+	 	
+
+
 //here we simply proceed to run a layer for each thread
 void runLayer(	uint3 threadIdx, 
 				uint3 groupIdx,
@@ -128,18 +137,23 @@ void runLayer(	uint3 threadIdx,
 
 	int dispatchSize= groupDim_x*2*dispatchDim_x;
 
+	//end of the line
+	int inputsFinished = input_startIx + layerInputSize;
+
 	int outputIx = output_startIx + groupIdx.x;
 	
 	sdata[tid] = 0;
 
+	int count = 0;
+	int etid = tid;
 	do{
-	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] 
-	 	+ weightArray[weightIx+groupDim_x]*inputArray[inputIx+groupDim_x]; 
+	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] + weightArray[weightIx+groupDim_x]*inputArray[inputIx+groupDim_x]; 
 
+	 	
 		inputIx += dispatchSize; 
 		weightIx += dispatchSize; 
 
-	} while (inputIx < input_startIx + layerInputSize);
+	} while (inputIx < inputsFinished);
 
 	GroupMemoryBarrierWithGroupSync();
 	

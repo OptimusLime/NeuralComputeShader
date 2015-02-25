@@ -422,7 +422,7 @@ namespace ComputeShader11
             return rInputs;
         }
 
-        static float[] DefaultRandomWeightArray(int[] layerSizes, int[] paddedSizes, int paddedInputSize, int fullSize, float? overwriteWeight = null, int? seed = null)
+        static float[] DefaultRandomWeightArray(int[] layerSizes, int[] paddedSizes, int trueInputSize, int paddedInputSize, int fullSize, float? overwriteWeight = null, int? seed = null)
         {
             Random r;
             if (seed.HasValue)
@@ -439,17 +439,25 @@ namespace ComputeShader11
                 int padded = paddedSizes[i];
 
                 int lastLayerSize = (i == 0 ? paddedInputSize : paddedSizes[i - 1]);
+                int lastTrueLayerSize = (i == 0 ? trueInputSize : layerSizes[i - 1]);
 
-                for (int c = 0; c < lastLayerSize; c++)
+                //for however many are in this layer
+                for (int w = 0; w < padded; w++)
                 {
-                    for (int w = 0; w < padded; w++)
+                    //only set weights in non-padded areas
+                    if (w >= original) //(c + 1)*
                     {
-                        //only set weights in non-padded areas
-                        if (w < original) //(c + 1)*
-                            finalWeights[startIx] = (overwriteWeight.HasValue ? overwriteWeight.Value : (float)r.NextDouble());
+                        startIx += (padded - original)*lastLayerSize;
+                        break;
+                    }
+
+                    for (int c = 0; c < lastLayerSize; c++)
+                    {
+                        if(c < lastTrueLayerSize)
+                            finalWeights[startIx] = (overwriteWeight.HasValue ? (i+1)*overwriteWeight.Value : (float)r.NextDouble());
 
                         //always increment start location
-                        startIx++;
+                         startIx++;
                     }
                 }
                 //increment the layer amout and carry on!
@@ -600,9 +608,9 @@ namespace ComputeShader11
 
             //create a random set of weights (or choose to overwrite with default weight
             //currently useing default weight of 1 for debug purposes
-            //float? overWrite = 1.0f; //set to null if you want true random
-            float? overWrite = null;// 1.0f; //set to null if you want true random
-            float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, paddedInputSize, fullWeightArraySize, overWrite);
+            float? overWrite = 1.0f; //set to null if you want true random
+            //float? overWrite = null;// 1.0f; //set to null if you want true random
+            float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, inputPixelSize, paddedInputSize, fullWeightArraySize, overWrite);
 
             //copy in the weights into a structure weight arary -- prepare it for the correct size
             GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
@@ -681,6 +689,7 @@ namespace ComputeShader11
             int[] fullInputBuffer;
             float[] networkOutputs = new float[trueOutputCount];
             int backpropState = 0;
+            int subIx = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
             {
                 //starts at 0
@@ -708,7 +717,7 @@ namespace ComputeShader11
                                                     layerDefinitions);
 
                     //write layer information into the GPU again and again! It needs to know current imnage and current layer
-                    WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+                    WriteUIntArrayToBuffer(device, inputBuffer, subIx++, constBufferSizeInBytes, fullInputBuffer);
 
                     //dispatch a call for each layer -- no need to read in between
                     //the number of calls we make is the size of the layer for the network
@@ -716,6 +725,8 @@ namespace ComputeShader11
 
                     //temp copy request
                     //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
+                    //backpropErrorNodeValues.CopyRangeTo(startLayerCountIx, paddedLayers[currentLayerIx], allNodeCheck, startLayerCountIx);
+                    //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
                     //going through layer ix
                     startLayerCountIx += paddedLayers[currentLayerIx];
