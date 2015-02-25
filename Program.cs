@@ -582,6 +582,11 @@ namespace ComputeShader11
             GPUList<float> networkNodeValues = new GPUList<float>(device.ImmediateContext);
             networkNodeValues.Capacity = fullInputOutputArraySize;
 
+            //finally, we create the network node array
+            GPUList<float> backpropErrorNodeValues = new GPUList<float>(device.ImmediateContext);
+            backpropErrorNodeValues.Capacity = fullInputOutputArraySize;
+
+
             //get ready to record these objects-- this time includes the time to copy everything
             //separate gpu clacle for setup
             Stopwatch gpuTotal = new Stopwatch();
@@ -595,6 +600,8 @@ namespace ComputeShader11
 
             //finally, set the default in/out nodes -- this might not be necessary
             networkNodeValues.AddRange(inputOutputNodeValues);
+            //copy in for backprop nodes as well
+            backpropErrorNodeValues.AddRange(inputOutputNodeValues);
 
             //Ordering of lists in shader -- should match unorderd access for directx compute shaders
             //RWStructuredBuffer<float> image_data;
@@ -608,6 +615,7 @@ namespace ComputeShader11
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkNodeValues.UnorderedAccess, unorderIx++);
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(backpropErrorNodeValues.UnorderedAccess, unorderIx++);
 
             //set contstant buffers
             device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, inputBufferIx);
@@ -629,10 +637,13 @@ namespace ComputeShader11
             float momentum = 0.0f;
 
             int backpropBlockx, backpropBlocky;
-            int psDiv =  (int)(Math.Ceiling((float)randomWeights.Length/paddingSize));
-            backpropBlockx = (int)Math.Ceiling(Math.Sqrt(psDiv));
-            backpropBlocky = psDiv - backpropBlockx;
+            int psDiv =  (int)(Math.Ceiling((float)randomWeights.Length/(paddingSize*paddingSize)));
+            backpropBlocky = (int)Math.Ceiling(Math.Sqrt(psDiv));
+            backpropBlockx = (int)(Math.Ceiling((float)(psDiv) / backpropBlocky));
 
+            bool chk = (backpropBlockx * backpropBlocky * paddingSize * paddingSize - randomWeights.Length) >= 0;
+            if (!chk)
+                throw new Exception("Incorrect breakdown of blocks being sent at last stage of backprop");
 
             int backpropState = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
