@@ -397,7 +397,25 @@ namespace ComputeShader11
 
             return finalSize;
         }
+        //send back random input images for the looking
+        static int[] DefaultRandomImageLabels(int outputCount, int imageCount, int? overwriteInput = null, int? seed = null)
+        {
+            Random r;
+            if (seed.HasValue)
+                r = new Random(seed.Value);
+            else
+                r = new Random();
 
+
+            int[] labels = new int[imageCount];
+            for(int i=0; i < imageCount; i++)
+            {
+                labels[i] = (overwriteInput.HasValue ? overwriteInput.Value : r.Next(imageCount));
+            }
+
+            //send it back!
+            return labels;
+        }
         //send back random input images for the looking
         static float[][] DefaultRandomInputImages(int pixelCount, int imageCount, float? overwriteInput = null, int? seed = null)
         {
@@ -548,12 +566,14 @@ namespace ComputeShader11
             //send in random input images
             float? overwriteInputs = 1.0f;
             float[][] randomInputImages = DefaultRandomInputImages(inputPixelSize, totalImageCount, overwriteInputs);
+            int? overwriteLabel = 5;
+            int[] randomInputLabels = DefaultRandomImageLabels(layerSizes.Last(), totalImageCount, overwriteLabel);
 
             //send it to shader 
             RunShader(device, computeShader, 
                 inputBuffer, constBufferSizeInBytes, 
                 backpropBuffer, constFloatBufferSizeInBytes,
-                inputPixelSize, totalImageCount, layerSizes, randomInputImages);
+                inputPixelSize, totalImageCount, layerSizes, randomInputImages, randomInputLabels);
         }
 
      
@@ -566,7 +586,8 @@ namespace ComputeShader11
             int inputPixelSize,
             int totalImageCount, 
             int[] layerSizes, 
-            float[][] inputImages)
+            float[][] inputImages,
+            int[] imageLabels)
         {
             //pad by dispatch dimension size == 2*number of threads
             //this is for efficient read purposes -- we don't want to read out of bounds, so we pad by dispatch size (stride length of shader)
@@ -626,6 +647,10 @@ namespace ComputeShader11
             GPUList<float> inputImageValues = new GPUList<float>(device.ImmediateContext);
             inputImageValues.Capacity = totalInputCapacity;
 
+            //Create list to hold input image labels
+            GPUList<int> inputImageLabels = new GPUList<int>(device.ImmediateContext);
+            inputImageLabels.Capacity = totalImageCount;
+
             //finally, we create the network node array
             GPUList<float> networkNodeValues = new GPUList<float>(device.ImmediateContext);
             networkNodeValues.Capacity = fullInputOutputArraySize;
@@ -642,6 +667,9 @@ namespace ComputeShader11
 
             //set ALL of the input images -- in reality -- this call is made ONCE for all networks ever
             inputImageValues.AddRange(fullPaddedInputValues);
+
+            //mark our labels as well, plz!
+            inputImageLabels.AddRange(imageLabels);
 
             //set the weights inside the gpu -- this is for the full network
             weightValues.AddRange(randomWeights);
@@ -662,6 +690,7 @@ namespace ComputeShader11
             device.ImmediateContext.ComputeShader.Set(computeShader);
             int unorderIx = 0;
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageValues.UnorderedAccess, unorderIx++);
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageLabels.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkNodeValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(backpropErrorNodeValues.UnorderedAccess, unorderIx++);

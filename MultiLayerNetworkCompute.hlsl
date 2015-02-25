@@ -27,6 +27,7 @@ cbuffer backprop {
 
 
 RWStructuredBuffer<float> image_data;
+RWStructuredBuffer<int> image_labels;
 RWStructuredBuffer<float> weight_data;
 RWStructuredBuffer<float> in_out_data;
 RWStructuredBuffer<float> node_error_data;
@@ -271,7 +272,10 @@ void propogateErrorDeltas(
 
 void parallelMax(	
 				uint3 threadIdx, 
-				uint3 groupIdx)
+				uint3 groupIdx,
+				int4 layerDefinition,
+				RWStructuredBuffer<float> inputArray,
+				RWStructuredBuffer<float> outputArray)
 {
 	//we need to figure out the max across a number of individuals
 	int checkCount = 0;
@@ -279,10 +283,17 @@ void parallelMax(
 	float bBest;
 	int lastIx;
 	int bestIx;
+	
+	//where do we start reading our inputs
+	int input_startIx = layerDefinition[LayerInputStartIx];
+	int inputIx = input_startIx + tid;
+
 	int readInputIx = inputIx;
 	int writeInputIx = inputIx;
-	//will fix soon
-	int targetIx = labels[something];
+	
+	//send in label data plz!
+	int targetIx = image_labels[currentImageIx];
+
 	//we will read two inputs at a time -- then decide which is better and store that index/value
 	//we will continue to read them against each other and choose max, until we have a final ix as max
 	//then we compare against max -- and set the errors accordingly
@@ -313,7 +324,9 @@ void parallelMax(
 	
 	//sync up -- now we have to reduce our mdata/sdata according to maximums
 	GroupMemoryBarrierWithGroupSync();
+
 	float sd, sd2;
+
 	if (groupDim_x>= 512) { 
 	if (tid < 256) { 
 		sd = sdata[tid]; sd2 = sdata[tid + 256];
