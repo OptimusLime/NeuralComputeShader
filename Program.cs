@@ -458,6 +458,37 @@ namespace ComputeShader11
             return finalWeights;
         }
 
+        static int MaxValue(float[] vals)
+        {
+            float mv = float.MinValue;
+            int maxIx = 0;
+            for (int i = 0; i < vals.Length; i++)
+            {
+                float v = vals[i];
+                if (v > mv)
+                {
+                    maxIx = i;
+                    mv = v;
+                }
+            }
+            //send back the index of the max value
+            return maxIx;
+        }
+
+        static float CorrectTarget(int ix, int correctIx)
+        {
+            return (ix == correctIx ? 1.0f : 0.0f);
+        }
+        static float[] CorrectFloatErrors(float[] networkOutputs, int correctIx)
+        {
+            float[] errors = new float[networkOutputs.Length];
+            for (int i = 0; i < networkOutputs.Length; i++)
+            {
+                errors[i] = CorrectTarget(i, correctIx) - networkOutputs[i];
+            }
+            return errors;
+        }
+
         #endregion
 
         //how many threads are launched for the main entry point
@@ -535,7 +566,8 @@ namespace ComputeShader11
 
             //pad out the layer sizes
             int[] paddedLayers = PadDefaultSizes(layerSizes, paddingSize);
-            int finalOutputCount = paddedLayers.Last();
+            int finalPaddedOutputCount = paddedLayers.Last();
+            int trueOutputCount = layerSizes.Last();
 
             //how much data will we load? padded values x total imagecount
             int totalInputCapacity = fullPaddedInputValues.Length;
@@ -647,6 +679,7 @@ namespace ComputeShader11
             //if (!chk)
             //    throw new Exception("Incorrect breakdown of blocks being sent at last stage of backprop");
             int[] fullInputBuffer;
+            float[] networkOutputs = new float[trueOutputCount];
             int backpropState = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
             {
@@ -671,7 +704,7 @@ namespace ComputeShader11
                                                     currentImageIx, 
                                                     backpropState,
                                                     paddedLayers[currentLayerIx], //send in the padded size of this particular layer
-                                                    finalOutputCount,
+                                                    finalPaddedOutputCount,
                                                     layerDefinitions);
 
                     //write layer information into the GPU again and again! It needs to know current imnage and current layer
@@ -688,6 +721,18 @@ namespace ComputeShader11
                     startLayerCountIx += paddedLayers[currentLayerIx];
                 }
 
+                //now we copy the image outputs from the nodes -- then set the node error. 
+                networkNodeValues.CopyRangeTo(fullInputOutputArraySize - finalPaddedOutputCount, trueOutputCount, networkOutputs, 0);
+
+                //select the max node -- that's the victor!
+                int chosenIx = MaxValue(networkOutputs);
+
+                //determine if it's right/wrong -- what the correct targets are
+                //this is fake for now
+                float[] corrections = CorrectFloatErrors(networkOutputs, 0);
+
+                //now copy into the network errors
+                backpropErrorNodeValues.SetRange(fullInputOutputArraySize - finalPaddedOutputCount, corrections, 0, trueOutputCount);
 
                 //here we run the network backwards to calculate all errors across the nodes
                 backpropState = 1;
@@ -705,7 +750,7 @@ namespace ComputeShader11
                                                     currentImageIx,
                                                     backpropState,
                                                     paddedLayers[currentLayerIx], //send in the padded size of this particular layer
-                                                    finalOutputCount,
+                                                    finalPaddedOutputCount,
                                                     backpropLayerDefinitions);
 
                     //step 2, write layer information into the GPU again and again! It needs to know current imnage and current layer
@@ -733,7 +778,7 @@ namespace ComputeShader11
                                         currentImageIx,
                                         backpropState,
                                         paddedLayers[0], //send in the padded size of this particular layer
-                                        finalOutputCount,
+                                        finalPaddedOutputCount,
                                         layerDefinitions);
 
                 //write layer information into the GPU again and again! It needs to know current imnage and current layer
