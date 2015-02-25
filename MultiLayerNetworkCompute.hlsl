@@ -18,6 +18,13 @@ cbuffer consts {
 	int4 allLayers[MAX_LAYERS];
 };
 
+cbuffer backprop {
+	float learningRate;
+	float momentum;
+	float extra1;
+	float extra2;
+};
+
 
 RWStructuredBuffer<float> image_data;
 RWStructuredBuffer<float> weight_data;
@@ -181,10 +188,10 @@ void calculateLayerError(
 
 	do{
 	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] 
-	 	+ weightArray[weightIx + groupDim_x*inputLayerSize]*inputArray[inputIx + groupDim_x]; 
+	 	+ weightArray[weightIx + groupDim_x*layerInputSize]*inputArray[inputIx + groupDim_x]; 
 
 		inputIx += dispatchSize; 
-		weightIx += dispatchSize*inputLayerSize; 
+		weightIx += dispatchSize*layerInputSize; 
 	} while (inputIx < input_startIx + currentLayerSize);
 
 	GroupMemoryBarrierWithGroupSync();

@@ -330,8 +330,8 @@ namespace ComputeShader11
             //plus one for implied input layer
             int fullLayerCount = paddedLayerSizes.Length;
 
-            //4 ints per layer
-            int[] finalDefinitions = new int[(fullLayerCount-1) * 4];
+            //4 ints per layer -- even though we don't use the earliest layer -- we still reserve space fro all the layers
+            int[] finalDefinitions = new int[fullLayerCount* 4];
 
             int inputStartIx = totalNodeCount;
             int weightStartIx = totalWeightCount;
@@ -487,9 +487,15 @@ namespace ComputeShader11
             //add the inputs
             Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);// WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
 
+            const int floatBufferCount = 4;
+            const int constFloatBufferSizeInBytes = floatBufferCount * sizeof(float);
+
+            //buffer for pushing in backprop related variables
+            Buffer backpropBuffer = CreateBuffer(device, constFloatBufferSizeInBytes);
+
             //these are our input sizes
             int inputPixelSize = 785;
-            int totalImageCount = 60000;
+            int totalImageCount = 100;
 
             int[] layerSizes = defaultLayerSizes;
 
@@ -498,15 +504,19 @@ namespace ComputeShader11
             float[][] randomInputImages = DefaultRandomInputImages(inputPixelSize, totalImageCount, overwriteInputs);
 
             //send it to shader 
-            RunShader(device, computeShader, inputBuffer, constBufferSizeInBytes,
+            RunShader(device, computeShader, 
+                inputBuffer, constBufferSizeInBytes, 
+                backpropBuffer, constFloatBufferSizeInBytes,
                 inputPixelSize, totalImageCount, layerSizes, randomInputImages);
         }
 
      
         static void RunShader(Device device, 
-            ComputeShader computeShader, 
-            Buffer inputBuffer, 
+            ComputeShader computeShader,
+            Buffer inputBuffer,
             int constBufferSizeInBytes,
+            Buffer backpropBuffer, 
+            int constFloatBufferSizeInBytes,
             int inputPixelSize,
             int totalImageCount, 
             int[] layerSizes, 
@@ -537,12 +547,16 @@ namespace ComputeShader11
             //use our layer sizes to create a full definiton of the network that can be executed on the GPU
             //we also measure node and connection sizes with this function -- mind you these are the full padded sizes
             int[] layerDefinitions = ConstructLayerDefinitions(paddedLayers, paddedInputSize, totalImageCount, out fullWeightArraySize, out fullInputOutputArraySize);
+            
+            //we use the new information to create the backprop definitions as well -- so we can go backwards with our network
+            int[] backpropLayerDefinitions = ConstructBackpropLayerDefinitions(paddedLayers, paddedInputSize, fullInputOutputArraySize, fullWeightArraySize);
 
             //finally, we create our empty node array -- this will store our network node values during network execution
             float[] inputOutputNodeValues = emptyArray(fullInputOutputArraySize);
 
             //set up our constant buffer with our inputs -- yazoooooooo
-            int inputBufferIx = 0;
+            const int inputBufferIx = 0;
+            const int backpropBufferIx = 1;
 
             //how many dispatches? Only every 1 at a time (so we say)
             int groupsToDispatch = 1;
@@ -594,7 +608,10 @@ namespace ComputeShader11
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkNodeValues.UnorderedAccess, unorderIx++);
+
+            //set contstant buffers
             device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, inputBufferIx);
+            device.ImmediateContext.ComputeShader.SetConstantBuffer(backpropBuffer, backpropBufferIx);
             
             //separate gpu clacle for setup
             Stopwatch gpu = new Stopwatch();
@@ -608,6 +625,14 @@ namespace ComputeShader11
             int startLayerCountIx = 0;
 
             float[] allNodeCheck = new float[inputOutputNodeValues.Length];
+            float learningRate = 1.0f;
+            float momentum = 0.0f;
+
+            int backpropBlockx, backpropBlocky;
+            int psDiv =  (int)(Math.Ceiling((float)randomWeights.Length/paddingSize));
+            backpropBlockx = (int)Math.Ceiling(Math.Sqrt(psDiv));
+            backpropBlocky = psDiv - backpropBlockx;
+
 
             int backpropState = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
@@ -648,6 +673,49 @@ namespace ComputeShader11
                     //going through layer ix
                     startLayerCountIx += paddedLayers[currentLayerIx];
                 }
+
+
+                //here we run the network backwards to calculate all errors across the nodes
+                backpropState = 1;
+
+                //we have processed the iamges going forward, now we propogate going backwards!!!
+                for (int currentLayerIx = layerSizes.Length - 1; currentLayerIx > 0; currentLayerIx--)
+                {
+                    //step 1, set up the input buffer
+                    //what information do we need to send into the constant buffer to make sure it's correct
+                    int[] fullInputBuffer = ConstructFullBuffer(
+                                                    groupsToDispatch,
+                                                    totalImageCount,
+                                                    paddedInputSize,
+                                                    currentLayerIx,
+                                                    currentImageIx,
+                                                    backpropState,
+                                                    paddedLayers[currentLayerIx], //send in the padded size of this particular layer
+                                                    backpropLayerDefinitions);
+
+                    //step 2, write layer information into the GPU again and again! It needs to know current imnage and current layer
+                    WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+
+                    //the actual previous layer size -- this will determine how many groups to run
+                    int previousLayerSize = layerSizes[currentLayerIx -1];
+
+                    //step 3, run the network for this layer
+                    //dispatch a call for each layer -- no need to read in between
+                    //the number of calls we make is the size of the previous layer for the network
+                    device.ImmediateContext.Dispatch(previousLayerSize, 1, 1);
+                }
+
+                //the final piece is to run 1 final update -- with as many groups as there are weights
+                //this will run a calculate to update the weights
+                backpropState = 2;
+
+                //set our floats to a buffer
+                WriteFloatsToBuffer(device, backpropBuffer, backpropBufferIx, constFloatBufferSizeInBytes, new float[] { learningRate, momentum});
+
+                //step 3, run the network for this layer
+                //dispatch a call for each layer -- no need to read in between
+                //the number of calls we make is the size of the previous layer for the network
+                device.ImmediateContext.Dispatch(backpropBlockx*paddingSize, backpropBlocky*paddingSize, 1);
             }
 
             finalGPUTime = gpu.ElapsedMilliseconds;
@@ -752,22 +820,9 @@ namespace ComputeShader11
             return finalCPUTime;
         }
 
-        static Buffer WriteFloatsToBuffer(Device device, int subresource, int totalByteSize, float[] values)
+        static void WriteFloatsToBuffer(Device device, Buffer floatBuffer, int subresource, int totalByteSize, float[] values)
         {
-            BufferDescription inputBufferDescription = new BufferDescription
-            {
-                BindFlags = BindFlags.ConstantBuffer,
-                CpuAccessFlags = CpuAccessFlags.Write,
-                OptionFlags = ResourceOptionFlags.None,
-                SizeInBytes = totalByteSize,
-                StructureByteStride = sizeof(float),
-                Usage = ResourceUsage.Dynamic,
-            };
-
-            //create the buffer accordingly
-            Buffer inputBuffer = new Buffer(device, inputBufferDescription);
-
-            DataBox input = device.ImmediateContext.MapSubresource(inputBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
+            DataBox input = device.ImmediateContext.MapSubresource(floatBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
 
             byte[] finalBytes = new byte[values.Length * sizeof(float)];
 
@@ -784,10 +839,7 @@ namespace ComputeShader11
             input.Data.Write(finalBytes, 0, finalBytes.Length);
 
             //unmap that mapped resource
-            device.ImmediateContext.UnmapSubresource(inputBuffer, subresource);
-
-            //send back input buffer
-            return inputBuffer;
+            device.ImmediateContext.UnmapSubresource(floatBuffer, subresource);
         }
 
 
