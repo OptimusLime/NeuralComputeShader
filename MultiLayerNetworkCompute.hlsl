@@ -11,7 +11,7 @@ cbuffer consts {
 	int currentLayerIx;
 	int currentImageIx;
 	int runBackprop;
-	int bpWeightsToRead;
+	int bpCurrentLayerSize;
 	int extra3;
 
 	//max layer count of 16 for now -- easy to adjust -- minimal memory impact in constant buffer
@@ -144,6 +144,7 @@ void calculateLayerError(
 				uint3 threadIdx, 
 				uint3 groupIdx,
 				int4 layerDefinition,
+				int currentLayerSize,
 				RWStructuredBuffer<float> inputArray,
 				RWStructuredBuffer<float> weightArray,
 				RWStructuredBuffer<float> outputArray) 
@@ -169,25 +170,14 @@ void calculateLayerError(
 	//we dispatch 3,000 groups
 	int startWeightIx = layerInputSize*(groupIdx.x) + weight_startIx;
 
-	//however many reads * 2 * inputLayerSize is the amount we have to skip ahead
-	int weightIx = weight_startIx + 2*dispatchDim_x*layerInputSize*tid;
+	int weightIx = weight_startIx + tid;
+	int inputIx = input_startIx + tid;
 
-	//where do we read our input?
-	int inputIx = input_startIx + groupIdx.x;
+	int dispatchSize= groupDim_x*2*dispatchDim_x;
 
-	//go ahead an make the read
-	float targetError = inputArray[inputIx];
-
-	//how large is teh gap between reads
-	int weightDispatchSize = layerInputSize*2;
-
-	//where are we storing this ifnromatino?
 	int outputIx = output_startIx + groupIdx.x;
 	
-
 	sdata[tid] = 0;
-
-	int readCount = 0;
 
 	do{
 	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] 
@@ -195,19 +185,7 @@ void calculateLayerError(
 
 		inputIx += dispatchSize; 
 		weightIx += dispatchSize*inputLayerSize; 
-	} while (inputIx < input_startIx + layerInputSize);
-
-
-	//do{
-	// 	sdata[tid] += weightArray[weightIx]*targetError
-	// 	+ weightArray[weightIx + layerInputSize]*targetError; 
-
-	//	weightIx += weightDispatchSize; 
-
-	//} while (readCount < dispatchDim_x);
-
-
-
+	} while (inputIx < input_startIx + currentLayerSize);
 
 	GroupMemoryBarrierWithGroupSync();
 	
@@ -242,9 +220,29 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 	else if(runBackprop == 1)
 	{
 		//we are running backprop on this layer -- but just to sum up the error rates
-		if(currentLayerIx == totalLayerCount - 1)
+		if(currentLayerIx != totalLayerCount - 1)
 		{
 			//special case when we're the first
+			calculateLayerError(	
+					threadIdx, 
+					groupIdx,
+					layerDefinition,
+					bpCurrentLayerSize,
+					node_error_data, //read and write to node error all the same for these non-end layers
+					weight_data,
+					node_error_data);
+		}
+		else
+		{
+			//special case when we're the last layer being backpropped
+			calculateLayerError(	
+					threadIdx, 
+					groupIdx,
+					layerDefinition,
+					bpCurrentLayerSize,
+					in_out_data, //special case here reading from in_out -- normally we would read from prev layer error
+					weight_data,
+					node_error_data);
 		}
 	}
 }

@@ -176,7 +176,14 @@ namespace ComputeShader11
         
         #region Layer Definition Helpers
 
-        static int[] ConstructFullBuffer(int dispatchSize, int totalTestImages, int inputPixelSize,  int currentLayerIx, int currentImageIx, int[] layerDefinitions)
+        static int[] ConstructFullBuffer(int dispatchSize, 
+            int totalTestImages, 
+            int inputPixelSize,  
+            int currentLayerIx, 
+            int currentImageIx, 
+            int runningBackprop,
+            int currentPaddedLayerSize,
+            int[] layerDefinitions)
         {
             //need to make a new mega array -- for writing to the buffer
             
@@ -202,8 +209,8 @@ namespace ComputeShader11
                 layerDefinitions.Length / 4,
                 currentLayerIx, 
                 currentImageIx,
-                0,
-                0,
+                runningBackprop,
+                currentPaddedLayerSize,
                 0
             };
 
@@ -309,6 +316,67 @@ namespace ComputeShader11
             //as well as the total number of required weights -- connection size!
             totalWeightSize = weightStartIx;
             totalNetworkSize = outputStartIx;
+
+            return finalDefinitions;
+        }
+
+        static int[] ConstructBackpropLayerDefinitions(
+            int[] paddedLayerSizes,  
+            int paddedInputSize,
+            int totalNodeCount,
+            int totalWeightCount
+            )
+        {
+            //plus one for implied input layer
+            int fullLayerCount = paddedLayerSizes.Length;
+
+            //4 ints per layer
+            int[] finalDefinitions = new int[(fullLayerCount-1) * 4];
+
+            int inputStartIx = totalNodeCount;
+            int weightStartIx = totalWeightCount;
+            int outputStartIx = 0;
+
+            //#define LayerInputSizeIx 0
+            //#define LayerInputStartIx 1
+            //#define LayerWeightStartIx 2
+            //#define LayerOutputStartIx 3
+            //backwards we go for backprop -- topsy turvyyyyy
+            //not that we do not need to calculate error for input nodes -- so we do 1 less layer than forwards propogation
+            for (int i = fullLayerCount-1; i > 0; i--)
+            {
+                int LayerInputSizeIx = 4 * i;
+                int LayerInputStartIx = 4 * i + 1;
+                int LayerWeightStartIx = 4 * i + 2;
+                int LayerOutputStartIx = 4 * i + 3;
+
+                //read this layer's output count -- in backprop THESE are the inputs
+                int layerInputSize = paddedLayerSizes[i];
+
+                //grab the true input size
+                finalDefinitions[LayerInputSizeIx] = layerInputSize;
+                
+                //where do we read from? The layer input count -- duh
+                inputStartIx -= layerInputSize;
+
+                //input starts at particular locations -- this is basically the sum of the number of features from before
+                finalDefinitions[LayerInputStartIx] = inputStartIx;
+
+                int previuosLayerCount = paddedLayerSizes[i - 1];
+
+                //go back however many weights x however many outputs we had this layer -- simple
+                weightStartIx -= layerInputSize * previuosLayerCount;
+
+                //where do we read the weights from?
+                finalDefinitions[LayerWeightStartIx] = weightStartIx;
+
+                //go back a litter farther, would you? Backprop is calculating the error for the previous layers nodes
+                //i.e. we start writing previousLayerCount number of nodes back in the array
+                outputStartIx = inputStartIx - previuosLayerCount;
+                
+                //set the layer definition output start to be 
+                finalDefinitions[LayerOutputStartIx] = outputStartIx;
+            }
 
             return finalDefinitions;
         }
@@ -541,6 +609,7 @@ namespace ComputeShader11
 
             float[] allNodeCheck = new float[inputOutputNodeValues.Length];
 
+            int backpropState = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
             {
                 //starts at 0
@@ -552,8 +621,19 @@ namespace ComputeShader11
                     //how many actual nodes are here -- not whats padded in memory
                     int trueLayerSize = layerSizes[currentLayerIx];
 
+                    //not backprop
+                    backpropState = 0;
+
                     //what information do we need to send into the constant buffer to make sure it's correct
-                    int[] fullInputBuffer = ConstructFullBuffer(groupsToDispatch, totalImageCount, paddedInputSize, currentLayerIx, currentImageIx, layerDefinitions);
+                    int[] fullInputBuffer = ConstructFullBuffer(
+                                                    groupsToDispatch, 
+                                                    totalImageCount, 
+                                                    paddedInputSize, 
+                                                    currentLayerIx, 
+                                                    currentImageIx, 
+                                                    backpropState,
+                                                    paddedLayers[currentLayerIx], //send in the padded size of this particular layer
+                                                    layerDefinitions);
 
                     //write layer information into the GPU again and again! It needs to know current imnage and current layer
                     WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
