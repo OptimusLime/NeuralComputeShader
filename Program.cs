@@ -183,6 +183,7 @@ namespace ComputeShader11
             int currentImageIx, 
             int runningBackprop,
             int currentPaddedLayerSize,
+            int finalPaddedOutputSize,
             int[] layerDefinitions)
         {
             //need to make a new mega array -- for writing to the buffer
@@ -211,7 +212,7 @@ namespace ComputeShader11
                 currentImageIx,
                 runningBackprop,
                 currentPaddedLayerSize,
-                0
+                finalPaddedOutputSize
             };
 
             //add in the layer definitions at the end
@@ -534,6 +535,7 @@ namespace ComputeShader11
 
             //pad out the layer sizes
             int[] paddedLayers = PadDefaultSizes(layerSizes, paddingSize);
+            int finalOutputCount = paddedLayers.Last();
 
             //how much data will we load? padded values x total imagecount
             int totalInputCapacity = fullPaddedInputValues.Length;
@@ -636,15 +638,15 @@ namespace ComputeShader11
             float learningRate = 1.0f;
             float momentum = 0.0f;
 
-            int backpropBlockx, backpropBlocky;
-            int psDiv =  (int)(Math.Ceiling((float)randomWeights.Length/(paddingSize*paddingSize)));
-            backpropBlocky = (int)Math.Ceiling(Math.Sqrt(psDiv));
-            backpropBlockx = (int)(Math.Ceiling((float)(psDiv) / backpropBlocky));
+            //int backpropBlockx, backpropBlocky;
+            //int psDiv =  (int)(Math.Ceiling((float)randomWeights.Length/(paddingSize*paddingSize)));
+            //backpropBlocky = (int)Math.Ceiling(Math.Sqrt(psDiv));
+            //backpropBlockx = (int)(Math.Ceiling((float)(psDiv) / backpropBlocky));
 
-            bool chk = (backpropBlockx * backpropBlocky * paddingSize * paddingSize - randomWeights.Length) >= 0;
-            if (!chk)
-                throw new Exception("Incorrect breakdown of blocks being sent at last stage of backprop");
-
+            //bool chk = (backpropBlockx * backpropBlocky * paddingSize * paddingSize - randomWeights.Length) >= 0;
+            //if (!chk)
+            //    throw new Exception("Incorrect breakdown of blocks being sent at last stage of backprop");
+            int[] fullInputBuffer;
             int backpropState = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
             {
@@ -661,7 +663,7 @@ namespace ComputeShader11
                     backpropState = 0;
 
                     //what information do we need to send into the constant buffer to make sure it's correct
-                    int[] fullInputBuffer = ConstructFullBuffer(
+                    fullInputBuffer = ConstructFullBuffer(
                                                     groupsToDispatch, 
                                                     totalImageCount, 
                                                     paddedInputSize, 
@@ -669,6 +671,7 @@ namespace ComputeShader11
                                                     currentImageIx, 
                                                     backpropState,
                                                     paddedLayers[currentLayerIx], //send in the padded size of this particular layer
+                                                    finalOutputCount,
                                                     layerDefinitions);
 
                     //write layer information into the GPU again and again! It needs to know current imnage and current layer
@@ -688,13 +691,13 @@ namespace ComputeShader11
 
                 //here we run the network backwards to calculate all errors across the nodes
                 backpropState = 1;
-
+                
                 //we have processed the iamges going forward, now we propogate going backwards!!!
                 for (int currentLayerIx = layerSizes.Length - 1; currentLayerIx > 0; currentLayerIx--)
                 {
                     //step 1, set up the input buffer
                     //what information do we need to send into the constant buffer to make sure it's correct
-                    int[] fullInputBuffer = ConstructFullBuffer(
+                    fullInputBuffer = ConstructFullBuffer(
                                                     groupsToDispatch,
                                                     totalImageCount,
                                                     paddedInputSize,
@@ -702,6 +705,7 @@ namespace ComputeShader11
                                                     currentImageIx,
                                                     backpropState,
                                                     paddedLayers[currentLayerIx], //send in the padded size of this particular layer
+                                                    finalOutputCount,
                                                     backpropLayerDefinitions);
 
                     //step 2, write layer information into the GPU again and again! It needs to know current imnage and current layer
@@ -720,13 +724,28 @@ namespace ComputeShader11
                 //this will run a calculate to update the weights
                 backpropState = 2;
 
+                //create the layer definitions to be send in to finish up backprop weight propogation
+                fullInputBuffer = ConstructFullBuffer(
+                                        groupsToDispatch,
+                                        totalImageCount,
+                                        paddedInputSize,
+                                        0,
+                                        currentImageIx,
+                                        backpropState,
+                                        paddedLayers[0], //send in the padded size of this particular layer
+                                        finalOutputCount,
+                                        layerDefinitions);
+
+                //write layer information into the GPU again and again! It needs to know current imnage and current layer
+                WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+
                 //set our floats to a buffer
                 WriteFloatsToBuffer(device, backpropBuffer, backpropBufferIx, constFloatBufferSizeInBytes, new float[] { learningRate, momentum});
 
                 //step 3, run the network for this layer
                 //dispatch a call for each layer -- no need to read in between
                 //the number of calls we make is the size of the previous layer for the network
-                device.ImmediateContext.Dispatch(backpropBlockx*paddingSize, backpropBlocky*paddingSize, 1);
+                device.ImmediateContext.Dispatch(fullInputOutputArraySize, 1, 1);
             }
 
             finalGPUTime = gpu.ElapsedMilliseconds;

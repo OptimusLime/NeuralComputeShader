@@ -12,15 +12,15 @@ cbuffer consts {
 	int currentImageIx;
 	int runBackprop;
 	int bpCurrentLayerSize;
-	int extra3;
+	int finalOutputCount;
 
 	//max layer count of 16 for now -- easy to adjust -- minimal memory impact in constant buffer
 	int4 allLayers[MAX_LAYERS];
 };
 
 cbuffer backprop {
-	float learningRate;
-	float momentum;
+	float bpLearningRate;
+	float bpMomentum;
 	float extra1;
 	float extra2;
 };
@@ -200,6 +200,60 @@ void calculateLayerError(
 	finishSharedDataSum(tid, outputArray, outputIx);
 }
 
+//here we simply proceed to run a layer for each thread
+void propogateErrorDeltas(	
+				uint3 threadIdx, 
+				uint3 groupIdx,
+				float learningRate,
+				float momentum,
+				int layerNetworkSize,
+				int4 layerDefinition,
+				RWStructuredBuffer<float> inputArray,
+				RWStructuredBuffer<float> weightArray) 
+{
+	int tid = (int)threadIdx.x;
+
+	//Nodes for sale! I got your nodes for sale here
+	//number of groups == number of nodes => groupIdx.x == nodeID inside the network
+	int nodeID = groupIdx.x;
+
+	//this is the error caclulation we need to propogate -- read from the same place all the time
+	float errorCalculation = learningRate*node_error_data[nodeID];
+
+	//where are we indexed in for the beginning of our weight array
+	int weight_startIx = layerDefinition[LayerWeightStartIx];
+
+	//now we know where to index in
+	int weightBaseIx = weight_startIx + nodeID*layerNetworkSize;
+
+	//what is the size of the inputs -- 785 if reading from mnist images --- or however many features at the next layers
+	int layerInputSize = layerDefinition[LayerInputSizeIx];
+
+	//where do we start reading our inputs
+	int input_startIx = layerDefinition[LayerInputStartIx];
+
+	//what weight should we write to?
+	int weightIx = weightBaseIx + tid;
+
+	//grab our input
+	int inputIx = input_startIx + tid;
+
+	//how far apart are teh reads
+	int dispatchSize= groupDim_x*2*dispatchDim_x;
+
+	//mostly doing writes here
+	do{
+
+		//update the weight array accordingly
+		weightArray[weightIx] += errorCalculation*inputArray[inputIx];
+		weightArray[weightIx + groupDim_x] += errorCalculation*inputArray[inputIx + groupDim_x];
+
+		inputIx += dispatchSize; 
+		weightIx += dispatchSize; 
+
+	} while (inputIx < input_startIx + layerInputSize);
+}
+
 [numthreads( groupDim_x, 1, 1)]
 void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, uint3 groupIdx: SV_GroupID)
 {
@@ -251,5 +305,69 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 					weight_data,
 					node_error_data);
 		}
+	}
+	else if(runBackprop == 2)
+	{
+		//final piece, we calculate and write all of the values back to our weight array
+		int groupID = groupIdx.x; 
+
+		int layerID = 0;
+		int startLayer = 0;
+		int endLayer= 0;
+		//now we find out what layer this node is from
+		for(int i=0; i <  totalLayerCount; i++)
+		{
+			//guessing...
+			layerID = i; 
+
+			//there are no other options, this is our layer
+			if(i == totalLayerCount -1)
+				break;
+
+			//check the next layer up
+			endLayer += allLayers[i + 1][LayerInputSizeIx];
+			
+			//are you less than layer sum and greater than start?? then you are in this layer!
+			if(groupID < endLayer && groupID >= startLayer)
+				break;
+
+			//we weren't in this layer, maybe next time -- increment please
+			startLayer += allLayers[i + 1][LayerInputSizeIx];
+		}
+
+		//how are we defined! We know what node we're investigating so we know what layer it comes from
+		int4 bpLayerDefinition = allLayers[layerID];
+		int nextLayerSize;
+
+		if(layerID != totalLayerCount - 1)
+			nextLayerSize = allLayers[layerID + 1][LayerInputSizeIx];
+		else
+			nextLayerSize = finalOutputCount;
+
+		if(layerID == 0){
+
+			//we start at a particular image
+			bpLayerDefinition[LayerInputStartIx] = currentImageIx*bpLayerDefinition[LayerInputSizeIx];
+
+			propogateErrorDeltas(threadIdx, groupIdx, 
+							bpLearningRate, bpMomentum, 
+							nextLayerSize, //send in the input size of the next layer -- i.e. outputcount
+							bpLayerDefinition, 
+							image_data,
+							weight_data);
+		}
+		else
+		{
+			propogateErrorDeltas(threadIdx, groupIdx, 
+							bpLearningRate, bpMomentum, 
+							nextLayerSize, //send in the input size of the next layer -- i.e. outputcount
+							bpLayerDefinition, 
+							in_out_data,
+							weight_data);
+		}
+
+
+
+
 	}
 }
