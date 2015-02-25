@@ -132,7 +132,7 @@ void runLayer(	uint3 threadIdx,
 	//we dispatch 3,000 groups
 	int startWeightIx = layerInputSize*(groupIdx.x) + weight_startIx;
 
-	int weightIx = weight_startIx + tid;
+	int weightIx = startWeightIx + tid;
 	int inputIx = input_startIx + tid;
 
 	int dispatchSize= groupDim_x*2*dispatchDim_x;
@@ -191,7 +191,7 @@ void calculateLayerError(
 	//we dispatch 3,000 groups
 	int startWeightIx = layerInputSize*(groupIdx.x) + weight_startIx;
 
-	int weightIx = weight_startIx + tid;
+	int weightIx = startWeightIx + tid;
 	int inputIx = input_startIx + tid;
 
 	int dispatchSize= groupDim_x*2*dispatchDim_x;
@@ -295,8 +295,8 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 	else if(runBackprop == 1)
 	{
 		//we are running backprop on this layer -- but just to sum up the error rates
-		if(currentLayerIx != totalLayerCount - 1)
-		{
+	//	if(currentLayerIx != totalLayerCount - 1)
+	//	{
 			//special case when we're the first
 			calculateLayerError(	
 					threadIdx, 
@@ -306,19 +306,18 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 					node_error_data, //read and write to node error all the same for these non-end layers
 					weight_data,
 					node_error_data);
-		}
-		else
-		{
-			//special case when we're the last layer being backpropped
-			calculateLayerError(	
-					threadIdx, 
-					groupIdx,
-					layerDefinition,
-					bpCurrentLayerSize,
-					in_out_data, //special case here reading from in_out -- normally we would read from prev layer error
-					weight_data,
-					node_error_data);
-		}
+	//	}
+	//	else
+	//	{
+	//		calculateLayerError(	
+	//				threadIdx, 
+	//				groupIdx,
+	//				layerDefinition,
+	//				bpCurrentLayerSize,
+	//				in_out_data, //special case here reading from in_out -- normally we would read from prev layer error
+	//				weight_data,
+	//				node_error_data);
+	//	}
 	}
 	else if(runBackprop == 2)
 	{

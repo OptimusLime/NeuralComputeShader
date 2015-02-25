@@ -450,11 +450,11 @@ namespace ComputeShader11
                         startIx += (padded - original)*lastLayerSize;
                         break;
                     }
-
+                    
                     for (int c = 0; c < lastLayerSize; c++)
                     {
                         if(c < lastTrueLayerSize)
-                            finalWeights[startIx] = (overwriteWeight.HasValue ? (i+1)*overwriteWeight.Value : (float)r.NextDouble());
+                            finalWeights[startIx] = (overwriteWeight.HasValue ? (c+1)*overwriteWeight.Value/lastLayerSize : (float)r.NextDouble());
 
                         //always increment start location
                          startIx++;
@@ -483,16 +483,22 @@ namespace ComputeShader11
             return maxIx;
         }
 
-        static float CorrectTarget(int ix, int correctIx)
+        static float CorrectTarget(int ix, int correctIx, float? correct, float? incorrect)
         {
-            return (ix == correctIx ? 1.0f : 0.0f);
+            bool isCorrect = (ix == correctIx);
+            
+            if(isCorrect)
+                return correct.HasValue ? correct.Value : 1.0f;
+            else
+                return (incorrect.HasValue ? incorrect.Value : 0.0f);
+
         }
-        static float[] CorrectFloatErrors(float[] networkOutputs, int correctIx)
+        static float[] CorrectFloatErrors(float[] networkOutputs, int correctIx, float? correct, float? incorrect)
         {
             float[] errors = new float[networkOutputs.Length];
             for (int i = 0; i < networkOutputs.Length; i++)
             {
-                errors[i] = CorrectTarget(i, correctIx) - networkOutputs[i];
+                errors[i] = CorrectTarget(i, correctIx, correct, incorrect) - networkOutputs[i];
             }
             return errors;
         }
@@ -507,7 +513,7 @@ namespace ComputeShader11
         const int MAX_LAYERS = 16;
 
 
-        static int[] defaultLayerSizes = new int[] { 3000, 10 };
+        static int[] defaultLayerSizes = new int[] { 100, 100, 10 };
 
         static void MultiLayerNetwork()
         {
@@ -727,6 +733,7 @@ namespace ComputeShader11
                     //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
                     //backpropErrorNodeValues.CopyRangeTo(startLayerCountIx, paddedLayers[currentLayerIx], allNodeCheck, startLayerCountIx);
                     //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                    networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
                     //going through layer ix
                     startLayerCountIx += paddedLayers[currentLayerIx];
@@ -740,7 +747,7 @@ namespace ComputeShader11
 
                 //determine if it's right/wrong -- what the correct targets are
                 //this is fake for now
-                float[] corrections = CorrectFloatErrors(networkOutputs, 0);
+                float[] corrections = emptyArray(networkOutputs.Length, 1.0f);//CorrectFloatErrors(networkOutputs, 0, networkOutputs[0] + 1, networkOutputs[0]+1);
 
                 //now copy into the network errors
                 backpropErrorNodeValues.SetRange(fullInputOutputArraySize - finalPaddedOutputCount, corrections, 0, trueOutputCount);
@@ -774,6 +781,10 @@ namespace ComputeShader11
                     //dispatch a call for each layer -- no need to read in between
                     //the number of calls we make is the size of the previous layer for the network
                     device.ImmediateContext.Dispatch(previousLayerSize, 1, 1);
+
+                    //check health of network -- debugging purposes -- read all the backprop nodes
+                    backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+
                 }
 
                 //the final piece is to run 1 final update -- with as many groups as there are weights
