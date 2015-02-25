@@ -281,7 +281,8 @@ void parallelMax(
 	int bestIx;
 	int readInputIx = inputIx;
 	int writeInputIx = inputIx;
-
+	//will fix soon
+	int targetIx = labels[something];
 	//we will read two inputs at a time -- then decide which is better and store that index/value
 	//we will continue to read them against each other and choose max, until we have a final ix as max
 	//then we compare against max -- and set the errors accordingly
@@ -465,10 +466,16 @@ void parallelMax(
 
 	int maxIx = mdata[0];
 
-	//now we can set error for each input!
+	//now we can set error for each input! == TARGET (are you correct) - actual output (read from input array!)
 	do{
-		outputArray[outputIx] = (writeInputIx == maxIx ? correctTarget : incorrectTarget);
-		outputArray[outputIx + groupDim_x] = (writeInputIx + groupDim_x == maxIx ? correctTarget : incorrectTarget);
+
+		//are you the max AND the correct choice?
+		float fTarget = (writeInputIx == maxIx && targetIx == writeInputIx ? correctTarget : incorrectTarget);
+		outputArray[outputIx] = fTarget - inputArray[outputIx];
+
+		//are you the max AND you're the correct choice?
+		fTarget = (writeInputIx + groupDim_x == maxIx && targetIx == writeInputIx + groupDim_x? correctTarget : incorrectTarget) 
+		outputArray[outputIx + groupDim_x] = fTarget - inputArray[outputIx + groupDim_x];
 
 		writeInputIx += dispatchSize; 
 		outputIx += dispatchSize; 

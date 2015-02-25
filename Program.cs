@@ -837,7 +837,7 @@ namespace ComputeShader11
                 WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
 
                 //set our floats to a buffer
-                WriteFloatsToBuffer(device, backpropBuffer, backpropBufferIx, constFloatBufferSizeInBytes, new float[] { learningRate, momentum});
+                WriteFloatsToBuffer(device, backpropBuffer, backpropBufferIx, constFloatBufferSizeInBytes, new float[] { learningRate, momentum, 1.0f, 0.0f});
 
                 //step 3, run the network for this layer
                 //dispatch a call for each layer -- no need to read in between
