@@ -27,10 +27,11 @@ cbuffer backprop {
 
 
 RWStructuredBuffer<float> image_data;
-RWStructuredBuffer<int> image_labels;
 RWStructuredBuffer<float> weight_data;
 RWStructuredBuffer<float> in_out_data;
 RWStructuredBuffer<float> node_error_data;
+RWStructuredBuffer<int> image_guesses;
+RWStructuredBuffer<int> image_labels;
 
 #define groupDim_x 512
 groupshared float sdata[groupDim_x];
@@ -145,13 +146,17 @@ void runLayer(	uint3 threadIdx,
 	int outputIx = output_startIx + groupIdx.x;
 	
 	sdata[tid] = 0;
-
-	int count = 0;
 	int etid = tid;
 	do{
 	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] + weightArray[weightIx+groupDim_x]*inputArray[inputIx+groupDim_x]; 
 
-	 	
+	 	//if(groupIdx.x == 0)
+		//{
+		//	node_error_data[etid] = inputArray[inputIx];
+		//	node_error_data[etid+groupDim_x] = inputArray[inputIx + groupDim_x];
+		//	etid += dispatchSize;
+		//}
+
 		inputIx += dispatchSize; 
 		weightIx += dispatchSize; 
 
@@ -161,6 +166,8 @@ void runLayer(	uint3 threadIdx,
 	
 	//now that its been read into shared memory, finish the sum normally, storing into outputIx
 	finishSharedDataSum(tid, outputArray, outputIx);
+
+	//GroupMemoryBarrierWithGroupSync();
 }
 
 void calculateLayerError(	
@@ -273,20 +280,36 @@ void propogateErrorDeltas(
 void parallelMax(	
 				uint3 threadIdx, 
 				uint3 groupIdx,
+				int finalLayerSize,
 				int4 layerDefinition,
 				RWStructuredBuffer<float> inputArray,
-				RWStructuredBuffer<float> outputArray)
+				RWStructuredBuffer<float> outputArray )
 {
+
+	//as usual, get our thread info
+	int tid = threadIdx.x;
+
 	//we need to figure out the max across a number of individuals
 	int checkCount = 0;
-	float lastCheck, vOne, vTwo;
-	float bBest;
-	int lastIx;
-	int bestIx;
+	float fBest, lastCheck, vOne, vTwo;
+
+	int lastIx, bestIx;
 	
-	//where do we start reading our inputs
-	int input_startIx = layerDefinition[LayerInputStartIx];
+	//where do we start reading our inputs -- why at the END of the layer of course --
+	//this is also the place we will eventually write to as well, derrrr
+	int input_startIx = layerDefinition[LayerOutputStartIx];
+
+	//input == output -- ya hear?
 	int inputIx = input_startIx + tid;
+
+	//how far apart are the read/writes
+	int dispatchSize= groupDim_x*2*dispatchDim_x;
+
+	//we go till the end
+	int inputsFinished = inputIx + finalLayerSize;
+	
+	//inputs and outputs are the same here -- just reading and writing to different arrays at the same location
+	int outputIx = inputIx;
 
 	int readInputIx = inputIx;
 	int writeInputIx = inputIx;
@@ -298,11 +321,14 @@ void parallelMax(
 	//we will continue to read them against each other and choose max, until we have a final ix as max
 	//then we compare against max -- and set the errors accordingly
 
+	mdata[tid] = 0;
+	sdata[tid] = 0;
+
 	do{
 		vOne = inputArray[readInputIx];
-		vTwo = inputArray[readInputIx+groupDim_x];
+		vTwo = inputArray[readInputIx + groupDim_x];
 
-		bestIx = (vTwo > vOne ? readInputIx+groupDim_x : readInputIx);
+		bestIx = (vTwo > vOne ? readInputIx + groupDim_x : readInputIx);
 		fBest = (vTwo > vOne ? vTwo : vOne);
 
 		if(checkCount > 0)
@@ -311,9 +337,11 @@ void parallelMax(
 			sdata[tid] =  (lastCheck > fBest ? lastCheck : fBest);
 		}
 		else{
-		 	mdata[tid] = (vTwo > vOne ? readInputIx+groupDim_x : readInputIx);
+		 	mdata[tid] = (vTwo > vOne ? readInputIx + groupDim_x : readInputIx);
 		 	sdata[tid] = (vTwo > vOne ? vTwo : vOne);
 		}
+
+		checkCount++;
 
 	 	lastCheck = fBest;
 	 	lastIx = bestIx;
@@ -322,6 +350,8 @@ void parallelMax(
 
 	} while (readInputIx < inputsFinished);
 	
+	//outputArray[tid] = tid;//sdata[tid];
+
 	//sync up -- now we have to reduce our mdata/sdata according to maximums
 	GroupMemoryBarrierWithGroupSync();
 
@@ -333,12 +363,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 256]
+			mdata[tid] = mdata[tid + 256];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 	} GroupMemoryBarrierWithGroupSync(); }
 	
@@ -346,12 +376,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 128]
+			mdata[tid] = mdata[tid + 128];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}} GroupMemoryBarrierWithGroupSync(); }
 	
 	if (groupDim_x >= 128) { 
@@ -360,12 +390,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 64]
+			mdata[tid] = mdata[tid + 64];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		} 
 		GroupMemoryBarrierWithGroupSync(); 
@@ -378,12 +408,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 32]
+			mdata[tid] = mdata[tid + 32];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		}
 		//GroupMemoryBarrierWithGroupSync(); 
@@ -395,12 +425,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 16]
+			mdata[tid] = mdata[tid + 16];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		}
 		//GroupMemoryBarrierWithGroupSync(); 
@@ -412,12 +442,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 8]
+			mdata[tid] = mdata[tid + 8];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		}
 		//GroupMemoryBarrierWithGroupSync(); 
@@ -429,12 +459,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 4]
+			mdata[tid] = mdata[tid + 4];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		}
 		//GroupMemoryBarrierWithGroupSync(); 
@@ -446,12 +476,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 2]
+			mdata[tid] = mdata[tid + 2];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		}
 		//GroupMemoryBarrierWithGroupSync(); 
@@ -463,12 +493,12 @@ void parallelMax(
 		if(sd2 > sd)
 		{
 			sdata[tid] = sd2;
-			mdata[tid] = mdata[tid + 1]
+			mdata[tid] = mdata[tid + 1];
 		}
 		else
 		{
 			sdata[tid] = sd;
-			mdata[tid] = mdata[tid ]
+			mdata[tid] = mdata[tid];
 		}
 		}
 		//GroupMemoryBarrierWithGroupSync(); 
@@ -477,23 +507,45 @@ void parallelMax(
 	//when all is said and done mdata[0] is the max index! 
 	GroupMemoryBarrierWithGroupSync(); 
 
-	int maxIx = mdata[0];
+	if(tid == 0)
+	{
+		//raw ix of maximum guess
+		image_guesses[currentImageIx] = mdata[0] - input_startIx;
+	}
+
 
 	//now we can set error for each input! == TARGET (are you correct) - actual output (read from input array!)
 	do{
 
 		//are you the max AND the correct choice?
-		float fTarget = (writeInputIx == maxIx && targetIx == writeInputIx ? correctTarget : incorrectTarget);
+		float fTarget = (writeInputIx - input_startIx == targetIx ? correctTarget : incorrectTarget);
 		outputArray[outputIx] = fTarget - inputArray[outputIx];
-
+		//if(tid == 0)
+		//{
+		//	outputArray[0] = mdata[0];//fTarget;// outputIx;//layerDefinition[LayerInputStartIx];//outputIx;//
+		//	outputArray[1] = sdata[1];//targetIx;
+		//	outputArray[2] = mdata[0] - input_startIx;//- input_startIx;//writeInputIx;
+		//	outputArray[3] = currentImageIx;// mdata[0] - input_startIx;//- input_startIx;//writeInputIx;
+		//}
 		//are you the max AND you're the correct choice?
-		fTarget = (writeInputIx + groupDim_x == maxIx && targetIx == writeInputIx + groupDim_x? correctTarget : incorrectTarget) 
+		fTarget = (writeInputIx + groupDim_x  - input_startIx == targetIx ? correctTarget : incorrectTarget);
 		outputArray[outputIx + groupDim_x] = fTarget - inputArray[outputIx + groupDim_x];
-
+		//if(tid == 0)
+		//	outputArray[5] = fTarget;
 		writeInputIx += dispatchSize; 
 		outputIx += dispatchSize; 
 
 	} while (writeInputIx < inputsFinished);
+	//outputArray[tid] = sdata[tid];
+
+	GroupMemoryBarrierWithGroupSync(); 
+
+	//if(tid == 0){
+	//	outputArray[0] = mdata[0];// outputIx;//layerDefinition[LayerInputStartIx];//outputIx;//mdata[0];
+	//	outputArray[2] = sdata[0];//layerDefinition[LayerInputSizeIx];//inputIx;// sdata[0];
+	//	outputArray[1] = mdata[0] - input_startIx;//layerDefinition[LayerWeightStartIx];//inputIx;// sdata[0];
+	//	outputArray[3] = layerDefinition[LayerOutputStartIx];//inputIx;// sdata[0];
+	//}
 }
 
 [numthreads( groupDim_x, 1, 1)]
@@ -506,11 +558,11 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 	if(runBackprop == 0)
 	{
 		//every thread takes this path when true
-		if(currentLayerIx == 0)
-		{	
+		//if(currentLayerIx == 0)
+		//{	
 			//we start at a particular image
-			layerDefinition[LayerInputStartIx] = currentImageIx*layerDefinition[LayerInputSizeIx];
-		}
+		//	layerDefinition[LayerInputStartIx] = currentImageIx*layerDefinition[LayerInputSizeIx];
+		//}
 
 		//our arrays are set according to layer - I would do and if/else statement and set a pointer
 		//put shader code doesn't allow this
@@ -521,6 +573,22 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 
 	}
 	else if(runBackprop == 1)
+	{
+
+		//always grab the last layer -- this contains all the info we need for parallel summations
+		layerDefinition = allLayers[totalLayerCount - 1];
+
+		//need to start the error propogation process with the outputs -- plz
+		parallelMax(	
+					threadIdx, 
+					groupIdx,
+					finalOutputCount,
+					layerDefinition, //read from layer def of the last layer -- output layer
+					in_out_data, //our "input" is the networks' output found within the last location of in_out_data -- layerdef will guide us
+					node_error_data);
+
+	}
+	else if(runBackprop == 2)
 	{
 		//we are running backprop on this layer -- but just to sum up the error rates
 	//	if(currentLayerIx != totalLayerCount - 1)
@@ -547,7 +615,7 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 	//				node_error_data);
 	//	}
 	}
-	else if(runBackprop == 2)
+	else if(runBackprop == 3)
 	{
 		//final piece, we calculate and write all of the values back to our weight array
 		int groupID = groupIdx.x; 

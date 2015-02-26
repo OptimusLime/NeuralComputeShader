@@ -385,7 +385,17 @@ namespace ComputeShader11
         #endregion
 
         #region Random/Empty Input Array Helpers
+        static int[] emptyIntArray(int size, int? defaultValue = null)
+        {
+            int[] finalSize = new int[size];
+            if (!defaultValue.HasValue)
+                return finalSize;
 
+            for (int i = 0; i < size; i++)
+                finalSize[i] = defaultValue.Value;
+
+            return finalSize;
+        }
         static float[] emptyArray(int size, float? defaultValue = null)
         {
             float[] finalSize = new float[size];
@@ -472,7 +482,7 @@ namespace ComputeShader11
                     for (int c = 0; c < lastLayerSize; c++)
                     {
                         if(c < lastTrueLayerSize)
-                            finalWeights[startIx] = (overwriteWeight.HasValue ? (c+1)*overwriteWeight.Value : (float)r.NextDouble());
+                            finalWeights[startIx] = (overwriteWeight.HasValue ? (w+1)*overwriteWeight.Value : (float)r.NextDouble());
 
                         //always increment start location
                          startIx++;
@@ -531,7 +541,7 @@ namespace ComputeShader11
         const int MAX_LAYERS = 16;
 
 
-        static int[] defaultLayerSizes = new int[] { 3000, 10 };
+        static int[] defaultLayerSizes = new int[] { 1000, 10 };
 
         static void MultiLayerNetwork()
         {
@@ -564,9 +574,10 @@ namespace ComputeShader11
             int[] layerSizes = defaultLayerSizes;
 
             //send in random input images
-            float? overwriteInputs = 1.0f;
+            //float? overwriteInputs = 1.0f;
+            float? overwriteInputs = null;// 1.0f;
             float[][] randomInputImages = DefaultRandomInputImages(inputPixelSize, totalImageCount, overwriteInputs);
-            int? overwriteLabel = 5;
+            int? overwriteLabel = 1;
             int[] randomInputLabels = DefaultRandomImageLabels(layerSizes.Last(), totalImageCount, overwriteLabel);
 
             //send it to shader 
@@ -622,6 +633,8 @@ namespace ComputeShader11
 
             //finally, we create our empty node array -- this will store our network node values during network execution
             float[] inputOutputNodeValues = emptyArray(fullInputOutputArraySize);
+            int[] networkGuesses = emptyIntArray(totalImageCount);
+
 
             //set up our constant buffer with our inputs -- yazoooooooo
             const int inputBufferIx = 0;
@@ -635,13 +648,9 @@ namespace ComputeShader11
 
             //create a random set of weights (or choose to overwrite with default weight
             //currently useing default weight of 1 for debug purposes
-            float? overWrite = 1.0f; //set to null if you want true random
-            //float? overWrite = null;// 1.0f; //set to null if you want true random
+            //float? overWrite = 1.0f; //set to null if you want true random
+            float? overWrite = null;// 1.0f; //set to null if you want true random
             float[] randomWeights = DefaultRandomWeightArray(layerSizes, paddedLayers, inputPixelSize, paddedInputSize, fullWeightArraySize, overWrite);
-
-            //copy in the weights into a structure weight arary -- prepare it for the correct size
-            GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
-            weightValues.Capacity = randomWeights.Length;
 
             //Create GPUList of particles using the immediate context
             GPUList<float> inputImageValues = new GPUList<float>(device.ImmediateContext);
@@ -651,6 +660,14 @@ namespace ComputeShader11
             GPUList<int> inputImageLabels = new GPUList<int>(device.ImmediateContext);
             inputImageLabels.Capacity = totalImageCount;
 
+            //Create list to hold input image labels
+            GPUList<int> networkImageGuesses = new GPUList<int>(device.ImmediateContext);
+            networkImageGuesses.Capacity = totalImageCount;
+
+            //copy in the weights into a structure weight arary -- prepare it for the correct size
+            GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
+            weightValues.Capacity = randomWeights.Length;
+
             //finally, we create the network node array
             GPUList<float> networkNodeValues = new GPUList<float>(device.ImmediateContext);
             networkNodeValues.Capacity = fullInputOutputArraySize;
@@ -659,6 +676,9 @@ namespace ComputeShader11
             GPUList<float> backpropErrorNodeValues = new GPUList<float>(device.ImmediateContext);
             backpropErrorNodeValues.Capacity = fullInputOutputArraySize;
 
+            int subIx = 0;
+            DataBox constantInputDataBox = DataboxMapResource(device, inputBuffer, inputBufferIx);
+            DataBox constantFloatInputDataBox = DataboxMapResource(device, backpropBuffer, backpropBufferIx);
 
             //get ready to record these objects-- this time includes the time to copy everything
             //separate gpu clacle for setup
@@ -670,6 +690,9 @@ namespace ComputeShader11
 
             //mark our labels as well, plz!
             inputImageLabels.AddRange(imageLabels);
+
+            //send in empty guess array
+            networkImageGuesses.AddRange(networkGuesses);
 
             //set the weights inside the gpu -- this is for the full network
             weightValues.AddRange(randomWeights);
@@ -690,11 +713,12 @@ namespace ComputeShader11
             device.ImmediateContext.ComputeShader.Set(computeShader);
             int unorderIx = 0;
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageValues.UnorderedAccess, unorderIx++);
-            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageLabels.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkNodeValues.UnorderedAccess, unorderIx++);
             device.ImmediateContext.ComputeShader.SetUnorderedAccessView(backpropErrorNodeValues.UnorderedAccess, unorderIx++);
-
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(networkImageGuesses.UnorderedAccess, unorderIx++);
+            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(inputImageLabels.UnorderedAccess, unorderIx++);
+            
             //set contstant buffers
             device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, inputBufferIx);
             device.ImmediateContext.ComputeShader.SetConstantBuffer(backpropBuffer, backpropBufferIx);
@@ -711,7 +735,7 @@ namespace ComputeShader11
             int startLayerCountIx = 0;
 
             float[] allNodeCheck = new float[inputOutputNodeValues.Length];
-            float learningRate = 1.0f;
+            float learningRate = 0.001f;
             float momentum = 0.0f;
 
             //int backpropBlockx, backpropBlocky;
@@ -726,14 +750,21 @@ namespace ComputeShader11
             float[] networkOutputs = new float[trueOutputCount];
             //DEBUG
             //float[] weightCheck = new float[randomWeights.Length];
+            int[] guessCheck = new int[totalImageCount];
 
             int backpropState = 0;
-            int subIx = 0;
             for (int currentImageIx = 0; currentImageIx < totalImageCount; currentImageIx++)
             {
                 //starts at 0
                 startLayerCountIx = 0;
 
+                //not backprop
+                backpropState = 0;
+                //set current read location
+                layerDefinitions[1] = currentImageIx * paddedInputSize;
+                float[] inputs = new float[paddedInputSize];
+                Array.Copy(fullPaddedInputValues, layerDefinitions[1], inputs, 0, paddedInputSize);
+  
                 if (true)
                 {
                     //we need to process this image across all layers
@@ -741,9 +772,6 @@ namespace ComputeShader11
                     {
                         //how many actual nodes are here -- not whats padded in memory
                         int trueLayerSize = layerSizes[currentLayerIx];
-
-                        //not backprop
-                        backpropState = 0;
 
                         //what information do we need to send into the constant buffer to make sure it's correct
                         fullInputBuffer = ConstructFullBuffer(
@@ -758,18 +786,19 @@ namespace ComputeShader11
                                                         layerDefinitions);
 
                         //write layer information into the GPU again and again! It needs to know current imnage and current layer
-                        WriteUIntArrayToBuffer(device, inputBuffer, subIx++, constBufferSizeInBytes, fullInputBuffer);
+                        WriteUIntArrayToBuffer(device, inputBuffer, constantInputDataBox, constBufferSizeInBytes, fullInputBuffer);
 
                         //dispatch a call for each layer -- no need to read in between
                         //the number of calls we make is the size of the layer for the network
                         device.ImmediateContext.Dispatch(trueLayerSize, 1, 1);
 
+                        //DEBUG
                         //temp copy request
                         //networkNodeValues.CopyRangeTo(startLayerCountIx, trueLayerSize, allNodeCheck, startLayerCountIx);
                         //backpropErrorNodeValues.CopyRangeTo(startLayerCountIx, paddedLayers[currentLayerIx], allNodeCheck, startLayerCountIx);
                         //backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
-                        //DEBUG
                         //networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                        networkNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
 
                         //going through layer ix
                         startLayerCountIx += paddedLayers[currentLayerIx];
@@ -796,8 +825,51 @@ namespace ComputeShader11
                         backpropErrorNodeValues.SetRange(fullInputOutputArraySize - finalPaddedOutputCount, corrections, 0, trueOutputCount);
                     }
                 }
-                //here we run the network backwards to calculate all errors across the nodes
+
                 backpropState = 1;
+
+                //create the layer definitions to be send in to finish up backprop weight propogation
+                fullInputBuffer = ConstructFullBuffer(
+                                        groupsToDispatch,
+                                        totalImageCount, //dont need
+                                        paddedInputSize, //dont need
+                                        0, //dont need 
+                                        currentImageIx, //NEED for this calc
+                                        backpropState, //NEED to say what we're doing for backprop
+                                        paddedLayers[0], //don't need
+                                        finalPaddedOutputCount, //NEED this for calculating how many outputs exist
+                                        layerDefinitions);//don't need
+
+                //write layer information into the GPU again and again! It needs to know current imnage and current layer
+                WriteUIntArrayToBuffer(device, inputBuffer, constantInputDataBox, constBufferSizeInBytes, fullInputBuffer);
+
+                //set our floats to a buffer
+                WriteFloatsToBuffer(device, backpropBuffer, constantFloatInputDataBox, constFloatBufferSizeInBytes, new float[] { learningRate, momentum, 1.0f, 0.0f });
+
+                //DEBUG
+                //Random r = new Random();
+                //allNodeCheck = allNodeCheck.Select(x => 0.0f).ToArray();
+                //allNodeCheck[allNodeCheck.Length - finalPaddedOutputCount] = 1.0f;
+                //allNodeCheck[allNodeCheck.Length - finalPaddedOutputCount + 1] = 4.0f + (float)r.NextDouble();
+                //allNodeCheck[allNodeCheck.Length - finalPaddedOutputCount + 2] = 2.0f + (float)r.NextDouble();
+                //allNodeCheck[allNodeCheck.Length - finalPaddedOutputCount + 3] = 2.0f;
+                //networkNodeValues.SetRange(0, allNodeCheck, 0, allNodeCheck.Length);
+                //allNodeCheck = allNodeCheck.Select(x => 0.0f).ToArray();
+                //backpropErrorNodeValues.SetRange(0, allNodeCheck, 0, allNodeCheck.Length);
+
+                //launch 1 group to handle the correction of the output layer --- shweet
+                //device.ImmediateContext.Dispatch(1, 1, 1);
+
+                //DEBUG
+                float[] dcheck = new float[allNodeCheck.Length];
+                networkNodeValues.CopyRangeTo(0, dcheck.Length, dcheck, 0);
+                backpropErrorNodeValues.CopyRangeTo(0, allNodeCheck.Length, allNodeCheck, 0);
+                networkImageGuesses.CopyRangeTo(0, guessCheck.Length, guessCheck, 0);
+                
+                continue;
+
+                //here we run the network backwards to calculate all errors across the nodes
+                backpropState = 2;
                 if (true)
                 {
                     //we have processed the iamges going forward, now we propogate going backwards!!!
@@ -817,7 +889,7 @@ namespace ComputeShader11
                                                         backpropLayerDefinitions);
 
                         //step 2, write layer information into the GPU again and again! It needs to know current imnage and current layer
-                        WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+                        WriteUIntArrayToBuffer(device, inputBuffer, constantInputDataBox, constBufferSizeInBytes, fullInputBuffer);
 
                         //the actual previous layer size -- this will determine how many groups to run
                         int previousLayerSize = layerSizes[currentLayerIx - 1];
@@ -836,7 +908,7 @@ namespace ComputeShader11
 
                 //the final piece is to run 1 final update -- with as many groups as there are weights
                 //this will run a calculate to update the weights
-                backpropState = 2;
+                backpropState = 3;
 
                 //DEBUG -- zero out anything non zero
                 //allNodeCheck = allNodeCheck.Select(x => (x != 0 ? 1.0f : 0.0f)).ToArray();
@@ -863,10 +935,10 @@ namespace ComputeShader11
                                         layerDefinitions);
 
                 //write layer information into the GPU again and again! It needs to know current imnage and current layer
-                WriteUIntArrayToBuffer(device, inputBuffer, inputBufferIx, constBufferSizeInBytes, fullInputBuffer);
+                WriteUIntArrayToBuffer(device, inputBuffer, constantInputDataBox, constBufferSizeInBytes, fullInputBuffer);
 
                 //set our floats to a buffer
-                WriteFloatsToBuffer(device, backpropBuffer, backpropBufferIx, constFloatBufferSizeInBytes, new float[] { learningRate, momentum, 1.0f, 0.0f});
+                WriteFloatsToBuffer(device, backpropBuffer, constantFloatInputDataBox, constFloatBufferSizeInBytes, new float[] { learningRate, momentum, 1.0f, 0.0f});
 
                 //step 3, run the network for this layer
                 //dispatch a call for each layer -- no need to read in between
@@ -891,7 +963,13 @@ namespace ComputeShader11
             float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
 
             Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime + " MS Per Image: " + absoluteTotalTime/totalImageCount);
+            
+            networkImageGuesses.CopyRangeTo(0, guessCheck.Length, guessCheck, 0);
            
+            //UH OH we don't dispose of anything
+            KillMappedResource(device, inputBuffer, inputBufferIx);
+            KillMappedResource(device, backpropBuffer, backpropBufferIx);
+
             Console.WriteLine("Now cpu calcs...");
             ParallelOptions po = new ParallelOptions();
             po.MaxDegreeOfParallelism = 8;
@@ -980,9 +1058,9 @@ namespace ComputeShader11
             return finalCPUTime;
         }
 
-        static void WriteFloatsToBuffer(Device device, Buffer floatBuffer, int subresource, int totalByteSize, float[] values)
+        static void WriteFloatsToBuffer(Device device, Buffer floatBuffer, DataBox input, int totalByteSize, float[] values)
         {
-            DataBox input = device.ImmediateContext.MapSubresource(floatBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
+            //DataBox input = device.ImmediateContext.MapSubresource(floatBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
 
             byte[] finalBytes = new byte[values.Length * sizeof(float)];
 
@@ -996,10 +1074,11 @@ namespace ComputeShader11
             }
 
             //write everything to the buffer
+            input.Data.Position = 0;
             input.Data.Write(finalBytes, 0, finalBytes.Length);
 
             //unmap that mapped resource
-            device.ImmediateContext.UnmapSubresource(floatBuffer, subresource);
+            //device.ImmediateContext.UnmapSubresource(floatBuffer, subresource);
         }
 
 
@@ -1019,15 +1098,26 @@ namespace ComputeShader11
             return new Buffer(device, inputBufferDescription);
 
         }
-        static Buffer WriteUIntsToBuffer(Device device, Buffer inputBuffer, int subresource, int totalByteSize, params int[] values)
+        static Buffer WriteUIntsToBuffer(Device device, Buffer inputBuffer, DataBox input, int totalByteSize, params int[] values)
         {
-            return WriteUIntArrayToBuffer(device, inputBuffer, subresource, totalByteSize, values);
+            return WriteUIntArrayToBuffer(device, inputBuffer, input, totalByteSize, values);
         }
 
-       static Buffer WriteUIntArrayToBuffer(Device device, Buffer inputBuffer, int subresource, int totalByteSize, int[] values)
+        static DataBox DataboxMapResource(Device device, Buffer inputBuffer, int subresource)
         {
-            DataBox input = device.ImmediateContext.MapSubresource(inputBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
+           return device.ImmediateContext.MapSubresource(inputBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
+        }
 
+        static void KillMappedResource(Device device, Buffer inputBuffer, int subresource)
+        {
+            device.ImmediateContext.UnmapSubresource(inputBuffer, subresource);
+        }
+
+        static Buffer WriteUIntArrayToBuffer(Device device, Buffer inputBuffer, DataBox input, int totalByteSize, int[] values)
+        {
+            //DataBox input = device.ImmediateContext.MapSubresource(inputBuffer, subresource, MapMode.WriteDiscard, MapFlags.None);//(inputBuffer, 0, constBufferSizeInBytes, MapMode.WriteDiscard, MapFlags.None);
+           //device.ImmediateContext.UpdateSubresource(
+            //input.Data.Position = 0;
             byte[] finalBytes = new byte[values.Length * sizeof(int)];
             
             int destinationIx = 0;
@@ -1040,436 +1130,437 @@ namespace ComputeShader11
             }
 
             //write everything to the buffer
+            input.Data.Position = 0;
             input.Data.Write(finalBytes, 0, finalBytes.Length);
 
             //unmap that mapped resource
-            device.ImmediateContext.UnmapSubresource(inputBuffer, subresource);
+            //device.ImmediateContext.UnmapSubresource(inputBuffer, subresource);
 
             //send back input buffer
             return inputBuffer;
         }
 
-       static void MainReduce()
-       {
-           Device device = new Device(DriverType.Hardware);//, DeviceCreationFlags.Debug);//, FeatureLevel.Level_11_0);
-           bool forceReload = true;
+       //static void MainReduce()
+       //{
+       //    Device device = new Device(DriverType.Hardware);//, DeviceCreationFlags.Debug);//, FeatureLevel.Level_11_0);
+       //    bool forceReload = true;
 
-           ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "runNetwork", forceReload);
-           //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceNonOptimal", forceReload);
-           //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceNonOptimal", forceReload);
-           //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "simpleMultiply", forceReload);
+       //    ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "runNetwork", forceReload);
+       //    //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceNonOptimal", forceReload);
+       //    //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "reduceNonOptimal", forceReload);
+       //    //ComputeShader computeShader = Helper.LoadComputeShader(device, "EfficientArrayCompute.hlsl", "simpleMultiply", forceReload);
 
-           if (computeShader == null)
-               return;
+       //    if (computeShader == null)
+       //        return;
 
-           //inputs we are sending in (must be >= 4 ints for whatever reason
-           const int bufferIntCount = 8;
-           const int constBufferSizeInBytes = bufferIntCount * sizeof(int);
+       //    //inputs we are sending in (must be >= 4 ints for whatever reason
+       //    const int bufferIntCount = 8;
+       //    const int constBufferSizeInBytes = bufferIntCount * sizeof(int);
 
-           //I HAVE NO IDEA WHAT THESE NUMBERS ARE YET
-           //uint n = 32;
-           //uint dimensionXSize = 2;
-           int computeShaderHardcodedThreadSize = 512;
-           int totalFloats = 785;
+       //    //I HAVE NO IDEA WHAT THESE NUMBERS ARE YET
+       //    //uint n = 32;
+       //    //uint dimensionXSize = 2;
+       //    int computeShaderHardcodedThreadSize = 512;
+       //    int totalFloats = 785;
 
-           int networkCount = 300;
-           int imageCount = 6000;
+       //    int networkCount = 300;
+       //    int imageCount = 6000;
 
-           int paddedCount = (int)(Math.Ceiling((float)totalFloats / computeShaderHardcodedThreadSize)*computeShaderHardcodedThreadSize);
+       //    int paddedCount = (int)(Math.Ceiling((float)totalFloats / computeShaderHardcodedThreadSize)*computeShaderHardcodedThreadSize);
 
-           //uint groupsToDispatch = (uint)Math.Ceiling((float)totalFloats / (2 *computeShaderHardcodedThreadSize));
-           int groupsToDispatch = (int)Math.Ceiling((float)totalFloats / (2 * computeShaderHardcodedThreadSize));
-           //uint groupsToDispatch = 1;
+       //    //uint groupsToDispatch = (uint)Math.Ceiling((float)totalFloats / (2 *computeShaderHardcodedThreadSize));
+       //    int groupsToDispatch = (int)Math.Ceiling((float)totalFloats / (2 * computeShaderHardcodedThreadSize));
+       //    //uint groupsToDispatch = 1;
 
-           //at least 1
-           groupsToDispatch = Math.Max(1, groupsToDispatch);
+       //    //at least 1
+       //    groupsToDispatch = Math.Max(1, groupsToDispatch);
 
-           if(groupsToDispatch > 1)
-            Console.WriteLine("I don't believe this is verified to work with more than 1 dispatch group size right now");
+       //    if(groupsToDispatch > 1)
+       //     Console.WriteLine("I don't believe this is verified to work with more than 1 dispatch group size right now");
 
-           //set up our constant buffer with our inputs -- yazoooooooo
-           int bufferIx = 0;
+       //    //set up our constant buffer with our inputs -- yazoooooooo
+       //    int bufferIx = 0;
           
-           Random r = new Random();
-           float[] weights = new float[paddedCount * networkCount];
-           for (int i = 0; i < weights.Length; i++)
-               if (i % paddedCount < totalFloats)
-                   weights[i] = (float)Math.Floor((float)i / paddedCount) + 1;// 1.0f;// (float)r.NextDouble();
+       //    Random r = new Random();
+       //    float[] weights = new float[paddedCount * networkCount];
+       //    for (int i = 0; i < weights.Length; i++)
+       //        if (i % paddedCount < totalFloats)
+       //            weights[i] = (float)Math.Floor((float)i / paddedCount) + 1;// 1.0f;// (float)r.NextDouble();
 
-           //copy in the weights into the constant input buffer
-           GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
+       //    //copy in the weights into the constant input buffer
+       //    GPUList<float> weightValues = new GPUList<float>(device.ImmediateContext);
 
-           //Create GPUList of particles using the immediate context
-           GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
+       //    //Create GPUList of particles using the immediate context
+       //    GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
 
-           float sum = 0;
-           float[] allFloats = new float[paddedCount * imageCount];
-           for (int i = 0; i < allFloats.Length; i++)
-           {
-               if (i % paddedCount < totalFloats)
-                   allFloats[i] = (float)Math.Floor((float)i / paddedCount) + 1;//(i % paddedCount) + 1;
-                   //allFloats[i] = (float)r.NextDouble(); //(i % paddedCount) + 1;
-           }
+       //    float sum = 0;
+       //    float[] allFloats = new float[paddedCount * imageCount];
+       //    for (int i = 0; i < allFloats.Length; i++)
+       //    {
+       //        if (i % paddedCount < totalFloats)
+       //            allFloats[i] = (float)Math.Floor((float)i / paddedCount) + 1;//(i % paddedCount) + 1;
+       //            //allFloats[i] = (float)r.NextDouble(); //(i % paddedCount) + 1;
+       //    }
 
-           //get ready to record these objects-- this time includes the time to copy everything
-           //separate gpu clacle for setup
-           Stopwatch gpuTotal = new Stopwatch();
-           gpuTotal.Start();
+       //    //get ready to record these objects-- this time includes the time to copy everything
+       //    //separate gpu clacle for setup
+       //    Stopwatch gpuTotal = new Stopwatch();
+       //    gpuTotal.Start();
 
-           //add the inputs
-           Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);// WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
+       //    //add the inputs
+       //    Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);// WriteUIntsToBuffer(device, bufferIx++, constBufferSizeInBytes, totalFloats, groupsToDispatch);
 
-           //set the weights inside the gpu
-           weightValues.Capacity = weights.Length;
-           weightValues.AddRange(weights);
+       //    //set the weights inside the gpu
+       //    weightValues.Capacity = weights.Length;
+       //    weightValues.AddRange(weights);
 
-           //add it in for memory purposes
-           allValues.Capacity = allFloats.Length;
-           allValues.AddRange(allFloats);
+       //    //add it in for memory purposes
+       //    allValues.Capacity = allFloats.Length;
+       //    allValues.AddRange(allFloats);
 
-           //setting up the breakdown of the network
-           int dispatchImageChunks = 5;
-           int dispatchNetworkChunks = 5;
+       //    //setting up the breakdown of the network
+       //    int dispatchImageChunks = 5;
+       //    int dispatchNetworkChunks = 5;
 
-           int networkIxStart = 0;
-           int imageIxStart = 0;
+       //    int networkIxStart = 0;
+       //    int imageIxStart = 0;
 
-           int netChunk = networkCount / dispatchNetworkChunks;
-           int imageChunk = imageCount / dispatchImageChunks;
+       //    int netChunk = networkCount / dispatchNetworkChunks;
+       //    int imageChunk = imageCount / dispatchImageChunks;
 
-           // Create GPUList of particles using the immediate context
-           GPUList<float> sumValue = new GPUList<float>(device.ImmediateContext);
-           int activationCount = networkCount * imageCount;
-           sumValue.Capacity = activationCount;
-           float[] az = new float[activationCount];
-           for (int i = 0; i < activationCount; i++)
-               az[i] = 0f;
-           sumValue.AddRange(az);
+       //    // Create GPUList of particles using the immediate context
+       //    GPUList<float> sumValue = new GPUList<float>(device.ImmediateContext);
+       //    int activationCount = networkCount * imageCount;
+       //    sumValue.Capacity = activationCount;
+       //    float[] az = new float[activationCount];
+       //    for (int i = 0; i < activationCount; i++)
+       //        az[i] = 0f;
+       //    sumValue.AddRange(az);
 
-           //now set it in our gpu
-           // Run the compute shader
-           device.ImmediateContext.ComputeShader.Set(computeShader);
-           int unorderIx = 0;
-           device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
-           device.ImmediateContext.ComputeShader.SetUnorderedAccessView(allValues.UnorderedAccess, unorderIx++);
-           device.ImmediateContext.ComputeShader.SetUnorderedAccessView(sumValue.UnorderedAccess, unorderIx++);
-           device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
+       //    //now set it in our gpu
+       //    // Run the compute shader
+       //    device.ImmediateContext.ComputeShader.Set(computeShader);
+       //    int unorderIx = 0;
+       //    device.ImmediateContext.ComputeShader.SetUnorderedAccessView(weightValues.UnorderedAccess, unorderIx++);
+       //    device.ImmediateContext.ComputeShader.SetUnorderedAccessView(allValues.UnorderedAccess, unorderIx++);
+       //    device.ImmediateContext.ComputeShader.SetUnorderedAccessView(sumValue.UnorderedAccess, unorderIx++);
+       //    device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
 
-           float[] finalCalculations = new float[activationCount];
+       //    float[] finalCalculations = new float[activationCount];
 
-           //separate gpu clacle for setup
-           Stopwatch gpu = new Stopwatch();
-           gpu.Start();
+       //    //separate gpu clacle for setup
+       //    Stopwatch gpu = new Stopwatch();
+       //    gpu.Start();
 
-           Stopwatch sw = null;
-           float copyTime = 0;
+       //    Stopwatch sw = null;
+       //    float copyTime = 0;
 
-           //int startCopyIx = 0;
-           //int networksAtATime = 1;
+       //    //int startCopyIx = 0;
+       //    //int networksAtATime = 1;
 
-           //int totalDispatches = (int)(Math.Ceiling((float)networkCount / networksAtATime));
+       //    //int totalDispatches = (int)(Math.Ceiling((float)networkCount / networksAtATime));
 
-           //WriteUIntsToBuffer(device, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, (uint)imageCount, paddedCount, (uint)0);// i*paddedCount);
-           //device.ImmediateContext.Dispatch(imageCount, networkCount, 1);
-           float finalGPUTime = 0;
+       //    //WriteUIntsToBuffer(device, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, (uint)imageCount, paddedCount, (uint)0);// i*paddedCount);
+       //    //device.ImmediateContext.Dispatch(imageCount, networkCount, 1);
+       //    float finalGPUTime = 0;
 
-           int sloppyCopyIx = 0;
-           //we need to loop through and run a bunch of dispatch calls
-            for (int t = 0; t < dispatchNetworkChunks; t++)
-            {
-                imageIxStart = 0;
-                for (int i = 0; i < dispatchImageChunks; i++)
-                {
-                    //sw = new Stopwatch();
-                    //sw.Start();
-                    WriteUIntsToBuffer(device, inputBuffer, 0, constBufferSizeInBytes, totalFloats, 
-                        groupsToDispatch, imageChunk, paddedCount, imageIxStart, networkIxStart, sloppyCopyIx);// i*paddedCount);
+       //    int sloppyCopyIx = 0;
+       //    //we need to loop through and run a bunch of dispatch calls
+       //     for (int t = 0; t < dispatchNetworkChunks; t++)
+       //     {
+       //         imageIxStart = 0;
+       //         for (int i = 0; i < dispatchImageChunks; i++)
+       //         {
+       //             //sw = new Stopwatch();
+       //             //sw.Start();
+       //             WriteUIntsToBuffer(device, inputBuffer,  0, constBufferSizeInBytes, totalFloats, 
+       //                 groupsToDispatch, imageChunk, paddedCount, imageIxStart, networkIxStart, sloppyCopyIx);// i*paddedCount);
                     
-                    device.ImmediateContext.Dispatch(imageChunk, netChunk, 1);
+       //             device.ImmediateContext.Dispatch(imageChunk, netChunk, 1);
                    
-                    //finalGPUTime += sw.ElapsedMilliseconds;
+       //             //finalGPUTime += sw.ElapsedMilliseconds;
                     
-                    sloppyCopyIx += imageChunk * netChunk;
+       //             sloppyCopyIx += imageChunk * netChunk;
 
-                    //sw = new Stopwatch();
-                    //sw.Start();
-                    ////we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
-                    //sumValue.CopyRangeTo(0, imageChunk * netChunk, finalCalculations, sloppyCopyIx);
-                    //sloppyCopyIx += imageChunk * netChunk;
+       //             //sw = new Stopwatch();
+       //             //sw.Start();
+       //             ////we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
+       //             //sumValue.CopyRangeTo(0, imageChunk * netChunk, finalCalculations, sloppyCopyIx);
+       //             //sloppyCopyIx += imageChunk * netChunk;
 
-                    //copyTime += sw.ElapsedMilliseconds;
+       //             //copyTime += sw.ElapsedMilliseconds;
 
-                   //for(int n=0; n < netChunk; n++)
-                        //sumValue.CopyRangeTo(imageChunk*n, imageChunk, finalCalculations, (networkIxStart + n) * imageCount + imageIxStart);
+       //            //for(int n=0; n < netChunk; n++)
+       //                 //sumValue.CopyRangeTo(imageChunk*n, imageChunk, finalCalculations, (networkIxStart + n) * imageCount + imageIxStart);
 
-                   //sumValue.CopyRangeTo(0, imageChunk * netChunk, finalCalculations, networkIxStart * imageCount + imageIxStart);
+       //            //sumValue.CopyRangeTo(0, imageChunk * netChunk, finalCalculations, networkIxStart * imageCount + imageIxStart);
 
-                   //for (int c = 0; c < sumValue.Count; c++)
-                   //    Console.WriteLine("C: " + sumValue[c]);
+       //            //for (int c = 0; c < sumValue.Count; c++)
+       //            //    Console.WriteLine("C: " + sumValue[c]);
 
-                   imageIxStart += imageChunk;
-               }
+       //            imageIxStart += imageChunk;
+       //        }
 
-               networkIxStart += netChunk;
-           }
+       //        networkIxStart += netChunk;
+       //    }
 
-            finalGPUTime = gpu.ElapsedMilliseconds;
+       //     finalGPUTime = gpu.ElapsedMilliseconds;
 
-            sw = new Stopwatch();
-            sw.Start();
-            //we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
-            sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
+       //     sw = new Stopwatch();
+       //     sw.Start();
+       //     //we'll figure out the copy locations later -- for now, we're simply happy we get it out quickly
+       //     sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
 
-            copyTime += sw.ElapsedMilliseconds;
+       //     copyTime += sw.ElapsedMilliseconds;
           
           
-           //run it a bunch o' times
-           //for (int i = 0; i < totalDispatches; i++)
-           //{
-           //    int networkStartIx = i * networksAtATime;
+       //    //run it a bunch o' times
+       //    //for (int i = 0; i < totalDispatches; i++)
+       //    //{
+       //    //    int networkStartIx = i * networksAtATime;
 
-           //    int chunkOfNetworks = Math.Min(networksAtATime, networkCount - networkStartIx);
+       //    //    int chunkOfNetworks = Math.Min(networksAtATime, networkCount - networkStartIx);
 
-           //    Console.WriteLine("Start: " + i);
-           //    WriteUIntsToBuffer(device, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, (uint)imageCount, paddedCount, (uint) networkStartIx);// i*paddedCount);
-           //    //device.ImmediateContext.Dispatch((int)groupsToDispatch, 1, 1);
-           //    device.ImmediateContext.Dispatch((int)(imageCount * groupsToDispatch * chunkOfNetworks), 1, 1);
-           //    Console.WriteLine("Dispatched: " + i);
+       //    //    Console.WriteLine("Start: " + i);
+       //    //    WriteUIntsToBuffer(device, 0, constBufferSizeInBytes, totalFloats, groupsToDispatch, (uint)imageCount, paddedCount, (uint) networkStartIx);// i*paddedCount);
+       //    //    //device.ImmediateContext.Dispatch((int)groupsToDispatch, 1, 1);
+       //    //    device.ImmediateContext.Dispatch((int)(imageCount * groupsToDispatch * chunkOfNetworks), 1, 1);
+       //    //    Console.WriteLine("Dispatched: " + i);
 
-           //    sw = new Stopwatch();
-           //    sw.Start();
+       //    //    sw = new Stopwatch();
+       //    //    sw.Start();
 
-           //    sumValue.CopyRangeTo(0, imageCount * chunkOfNetworks, finalCalculations, startCopyIx);
-           //    Console.WriteLine("Copied: " + i);
+       //    //    sumValue.CopyRangeTo(0, imageCount * chunkOfNetworks, finalCalculations, startCopyIx);
+       //    //    Console.WriteLine("Copied: " + i);
 
-           //    startCopyIx += imageCount * chunkOfNetworks;
-           //    copyTime  += sw.ElapsedMilliseconds;
+       //    //    startCopyIx += imageCount * chunkOfNetworks;
+       //    //    copyTime  += sw.ElapsedMilliseconds;
 
-           //}
+       //    //}
 
-           //sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
+       //    //sumValue.CopyRangeTo(0, activationCount, finalCalculations, 0);
 
-           //float finalGPUTime = gpu.ElapsedMilliseconds;
+       //    //float finalGPUTime = gpu.ElapsedMilliseconds;
 
         
          
-           float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
+       //    float absoluteTotalTime = gpuTotal.ElapsedMilliseconds;
 
-           Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime);
-           //for(int i=0; i < doItAbunch; i++)
-           //    Console.WriteLine("GPU Summation Time Inner: " + elapsed[i]);
-
-
-           // Print the particles again
-           //Console.WriteLine("\n\nAfter Simple:");
-           //foreach (float p in allValues)
-           //    Console.WriteLine(p.ToString());
-
-           Stopwatch cpuSW = new Stopwatch();
-
-           cpuSW.Start();
-
-           int startIx = 0;
-
-           float[] cpuCalculations = new float[activationCount];
-           int ax = 0;
-           //for (int t = 0; t < networkCount; t++)
-           ParallelOptions po = new ParallelOptions();
-           po.MaxDegreeOfParallelism = 8;
-
-           Parallel.For(0, networkCount, po, t =>
-               {
-                   //weights start at network start
-                   int networkStart = (int)(t * paddedCount);
-
-                   //for each image
-                   for (int ix = 0; ix < imageCount; ix++)
-                   {
-                       int imageStart = (int)(ix * paddedCount);
-                       sum = 0;
-                       for (int i = 0; i < totalFloats; i++)
-                       {
-                           sum += weights[networkStart + i] * allFloats[imageStart + i];
-                       }
-
-                       //grab the calc for each weight/float combo sum mult
-                       cpuCalculations[t*imageCount + ix] = sum;
-                   }
-
-                   //skip ahead the padded amount -- we do the sums here
-                   //startIx += (int)paddedCount;
-               });
-
-           float finalCPUTime = cpuSW.ElapsedMilliseconds;
-           Console.WriteLine("CPU Summation Time: " + finalCPUTime);
-
-           Console.WriteLine("Speedup: " + finalCPUTime / absoluteTotalTime);
+       //    Console.WriteLine("GPU Calc Time: " + finalGPUTime + " Copy out time: " + copyTime + " Total Time: " + absoluteTotalTime);
+       //    //for(int i=0; i < doItAbunch; i++)
+       //    //    Console.WriteLine("GPU Summation Time Inner: " + elapsed[i]);
 
 
-           for (int i = 0; i < activationCount; i++)
-           {
-               bool gpuEqualsCPU = Math.Abs(cpuCalculations[i] - finalCalculations[i]) < 0.001;
+       //    // Print the particles again
+       //    //Console.WriteLine("\n\nAfter Simple:");
+       //    //foreach (float p in allValues)
+       //    //    Console.WriteLine(p.ToString());
 
-               Console.WriteLine("They are equal? " + (gpuEqualsCPU ? "YES" : "NO! :(") + " dif: " + Math.Abs(cpuCalculations[i] - finalCalculations[i]));
-           }
+       //    Stopwatch cpuSW = new Stopwatch();
+
+       //    cpuSW.Start();
+
+       //    int startIx = 0;
+
+       //    float[] cpuCalculations = new float[activationCount];
+       //    int ax = 0;
+       //    //for (int t = 0; t < networkCount; t++)
+       //    ParallelOptions po = new ParallelOptions();
+       //    po.MaxDegreeOfParallelism = 8;
+
+       //    Parallel.For(0, networkCount, po, t =>
+       //        {
+       //            //weights start at network start
+       //            int networkStart = (int)(t * paddedCount);
+
+       //            //for each image
+       //            for (int ix = 0; ix < imageCount; ix++)
+       //            {
+       //                int imageStart = (int)(ix * paddedCount);
+       //                sum = 0;
+       //                for (int i = 0; i < totalFloats; i++)
+       //                {
+       //                    sum += weights[networkStart + i] * allFloats[imageStart + i];
+       //                }
+
+       //                //grab the calc for each weight/float combo sum mult
+       //                cpuCalculations[t*imageCount + ix] = sum;
+       //            }
+
+       //            //skip ahead the padded amount -- we do the sums here
+       //            //startIx += (int)paddedCount;
+       //        });
+
+       //    float finalCPUTime = cpuSW.ElapsedMilliseconds;
+       //    Console.WriteLine("CPU Summation Time: " + finalCPUTime);
+
+       //    Console.WriteLine("Speedup: " + finalCPUTime / absoluteTotalTime);
+
+
+       //    for (int i = 0; i < activationCount; i++)
+       //    {
+       //        bool gpuEqualsCPU = Math.Abs(cpuCalculations[i] - finalCalculations[i]) < 0.001;
+
+       //        Console.WriteLine("They are equal? " + (gpuEqualsCPU ? "YES" : "NO! :(") + " dif: " + Math.Abs(cpuCalculations[i] - finalCalculations[i]));
+       //    }
 
 
 
-           //Console.WriteLine("\n\n Each Sum Value:");
-           //foreach (float p in sumValue)
-           //    Console.WriteLine(p.ToString());
+       //    //Console.WriteLine("\n\n Each Sum Value:");
+       //    //foreach (float p in sumValue)
+       //    //    Console.WriteLine(p.ToString());
 
 
-           //Console.WriteLine("\nFinal GPU Value:");
-           //float f = sumValue.Sum();
-           //Console.WriteLine(f);
+       //    //Console.WriteLine("\nFinal GPU Value:");
+       //    //float f = sumValue.Sum();
+       //    //Console.WriteLine(f);
 
-           //int halfFloat = (int)totalFloats / 2;
-           ////Console.WriteLine("OOps: " + allValues.Sum());// allValues.ToList().GetRange(halfFloat, halfFloat).Sum());
-           //Console.WriteLine("True Sum: " + sum);
+       //    //int halfFloat = (int)totalFloats / 2;
+       //    ////Console.WriteLine("OOps: " + allValues.Sum());// allValues.ToList().GetRange(halfFloat, halfFloat).Sum());
+       //    //Console.WriteLine("True Sum: " + sum);
 
-           //bool gpuEqualsCPU = Math.Abs(sum  - f) < 0.001;
-           //Console.WriteLine("They are equal? " +  (gpuEqualsCPU ? "YES" : "NO! :("));
+       //    //bool gpuEqualsCPU = Math.Abs(sum  - f) < 0.001;
+       //    //Console.WriteLine("They are equal? " +  (gpuEqualsCPU ? "YES" : "NO! :("));
 
-           allValues.ShaderResource.Dispose();
-           sumValue.ShaderResource.Dispose();
-           inputBuffer.Dispose();
-           device.Dispose();
-       }
+       //    allValues.ShaderResource.Dispose();
+       //    sumValue.ShaderResource.Dispose();
+       //    inputBuffer.Dispose();
+       //    device.Dispose();
+       //}
 
-        static bool MainSimple()
-        {
-            Device device = new Device(DriverType.Hardware);//, DeviceCreationFlags.Debug);//, FeatureLevel.Level_11_0);
-            bool forceReload = true;
+        //static bool MainSimple()
+        //{
+        //    Device device = new Device(DriverType.Hardware);//, DeviceCreationFlags.Debug);//, FeatureLevel.Level_11_0);
+        //    bool forceReload = true;
 
-            ComputeShader computeShader = Helper.LoadComputeShader(device, "SlimExampleCompute.hlsl", "testStructure", forceReload);
+        //    ComputeShader computeShader = Helper.LoadComputeShader(device, "SlimExampleCompute.hlsl", "testStructure", forceReload);
 
-            if (computeShader == null)
-                return true;
+        //    if (computeShader == null)
+        //        return true;
 
-            //inputs we are sending in (must be >= 4 ints for whatever reason
-            const int bufferIntCount = 4;
-            const int constBufferSizeInBytes = bufferIntCount * sizeof(uint);
+        //    //inputs we are sending in (must be >= 4 ints for whatever reason
+        //    const int bufferIntCount = 4;
+        //    const int constBufferSizeInBytes = bufferIntCount * sizeof(uint);
 
-            //I HAVE NO IDEA WHAT THESE NUMBERS ARE YET
-            int n = 32;
-            int dimensionXSize = 2;
+        //    //I HAVE NO IDEA WHAT THESE NUMBERS ARE YET
+        //    int n = 32;
+        //    int dimensionXSize = 2;
 
-            int bufferIx = 0;
-            //set up our constant buffer with our inputs -- yazoooooooo
-            Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);
-            WriteUIntsToBuffer(device, inputBuffer, bufferIx++, constBufferSizeInBytes, n, dimensionXSize);
+        //    int bufferIx = 0;
+        //    //set up our constant buffer with our inputs -- yazoooooooo
+        //    Buffer inputBuffer = CreateBuffer(device, constBufferSizeInBytes);
+        //    WriteUIntsToBuffer(device, inputBuffer, bufferIx++, constBufferSizeInBytes, n, dimensionXSize);
        
-            // Create GPUList of particles using the immediate context
-            GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
+        //    // Create GPUList of particles using the immediate context
+        //    GPUList<float> allValues = new GPUList<float>(device.ImmediateContext);
 
-            int totalFloats = 16;
-            float[] allFloats = new float[totalFloats];
-            for (int i = 0; i < totalFloats; i++)
-                allFloats[i] = i + 1;
+        //    int totalFloats = 16;
+        //    float[] allFloats = new float[totalFloats];
+        //    for (int i = 0; i < totalFloats; i++)
+        //        allFloats[i] = i + 1;
 
-            //add it in for memory purposes
-            allValues.AddRange(allFloats);
+        //    //add it in for memory purposes
+        //    allValues.AddRange(allFloats);
 
-            //now set it in our gpu
-            // Run the compute shader
-            device.ImmediateContext.ComputeShader.Set(computeShader);
-            device.ImmediateContext.ComputeShader.SetUnorderedAccessView(allValues.UnorderedAccess, 0);
-            device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
-            device.ImmediateContext.Dispatch(1, 1, 1);
+        //    //now set it in our gpu
+        //    // Run the compute shader
+        //    device.ImmediateContext.ComputeShader.Set(computeShader);
+        //    device.ImmediateContext.ComputeShader.SetUnorderedAccessView(allValues.UnorderedAccess, 0);
+        //    device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
+        //    device.ImmediateContext.Dispatch(1, 1, 1);
 
-            // Print the particles again
-            Console.WriteLine("\n\nAfter Integration:");
-            foreach (float p in allValues)
-                Console.WriteLine(p.ToString());
+        //    // Print the particles again
+        //    Console.WriteLine("\n\nAfter Integration:");
+        //    foreach (float p in allValues)
+        //        Console.WriteLine(p.ToString());
 
-            return true;
+        //    return true;
 
 
-            //// Add some values
-            //const int elementCount = 4;
-            //const int bufferSizeInBytes = elementCount * sizeof(uint);
+        //    //// Add some values
+        //    //const int elementCount = 4;
+        //    //const int bufferSizeInBytes = elementCount * sizeof(uint);
 
-            //// The input to the computation will be a constant buffer containing
-            //// integers (in floating point representation) from 1 to numberOfElements,
-            //// inclusive. The compute shader itself will double these values and write
-            //// them to the output buffer.
-            //BufferDescription inputBufferDescription = new BufferDescription
-            //{
-            //    BindFlags = BindFlags.ConstantBuffer,
-            //    CpuAccessFlags = CpuAccessFlags.Write,
-            //    OptionFlags = ResourceOptionFlags.None,
-            //    SizeInBytes = bufferSizeInBytes,
-            //    StructureByteStride = sizeof(uint),
-            //    Usage = ResourceUsage.Dynamic,
-            //};
+        //    //// The input to the computation will be a constant buffer containing
+        //    //// integers (in floating point representation) from 1 to numberOfElements,
+        //    //// inclusive. The compute shader itself will double these values and write
+        //    //// them to the output buffer.
+        //    //BufferDescription inputBufferDescription = new BufferDescription
+        //    //{
+        //    //    BindFlags = BindFlags.ConstantBuffer,
+        //    //    CpuAccessFlags = CpuAccessFlags.Write,
+        //    //    OptionFlags = ResourceOptionFlags.None,
+        //    //    SizeInBytes = bufferSizeInBytes,
+        //    //    StructureByteStride = sizeof(uint),
+        //    //    Usage = ResourceUsage.Dynamic,
+        //    //};
 
-            //Buffer inputBuffer = new Buffer(device, inputBufferDescription);
-            //DataBox input = device.ImmediateContext.MapSubresource(inputBuffer, MapMode.WriteDiscard, MapFlags.None);
-            //for (int value = 1; value <= elementCount; ++value)
-            //    input.Data.Write((uint)value);
-            //device.ImmediateContext.UnmapSubresource(inputBuffer, 0);
+        //    //Buffer inputBuffer = new Buffer(device, inputBufferDescription);
+        //    //DataBox input = device.ImmediateContext.MapSubresource(inputBuffer, MapMode.WriteDiscard, MapFlags.None);
+        //    //for (int value = 1; value <= elementCount; ++value)
+        //    //    input.Data.Write((uint)value);
+        //    //device.ImmediateContext.UnmapSubresource(inputBuffer, 0);
 
-            //// A staging buffer is used to copy data between the CPU and GPU; the output
-            //// buffer (which gets the computation results) cannot be mapped directly.
-            //BufferDescription stagingBufferDescription = new BufferDescription
-            //{
-            //    BindFlags = BindFlags.None,
-            //    CpuAccessFlags = CpuAccessFlags.Read,
-            //    OptionFlags = ResourceOptionFlags.StructuredBuffer,
-            //    SizeInBytes = bufferSizeInBytes,
-            //    StructureByteStride = sizeof(float),
-            //    Usage = ResourceUsage.Staging,
-            //};
-            //Buffer stagingBuffer = new Buffer(device, stagingBufferDescription);
+        //    //// A staging buffer is used to copy data between the CPU and GPU; the output
+        //    //// buffer (which gets the computation results) cannot be mapped directly.
+        //    //BufferDescription stagingBufferDescription = new BufferDescription
+        //    //{
+        //    //    BindFlags = BindFlags.None,
+        //    //    CpuAccessFlags = CpuAccessFlags.Read,
+        //    //    OptionFlags = ResourceOptionFlags.StructuredBuffer,
+        //    //    SizeInBytes = bufferSizeInBytes,
+        //    //    StructureByteStride = sizeof(float),
+        //    //    Usage = ResourceUsage.Staging,
+        //    //};
+        //    //Buffer stagingBuffer = new Buffer(device, stagingBufferDescription);
 
-            //// The output buffer itself, and the view required to bind it to the pipeline.
-            //BufferDescription outputBufferDescription = new BufferDescription
-            //{
-            //    BindFlags = BindFlags.UnorderedAccess | BindFlags.ShaderResource,
-            //    OptionFlags = ResourceOptionFlags.StructuredBuffer,
-            //    SizeInBytes = bufferSizeInBytes,
-            //    StructureByteStride = sizeof(float),
-            //    Usage = ResourceUsage.Default,
-            //};
-            //Buffer outputBuffer = new Buffer(device, outputBufferDescription);
-            //UnorderedAccessViewDescription outputViewDescription = new UnorderedAccessViewDescription
-            //{
-            //    ElementCount = elementCount,
-            //    Format = SlimDX.DXGI.Format.Unknown,
-            //    Dimension = UnorderedAccessViewDimension.Buffer
-            //};
-            //UnorderedAccessView outputView = new UnorderedAccessView(device, outputBuffer, outputViewDescription);
+        //    //// The output buffer itself, and the view required to bind it to the pipeline.
+        //    //BufferDescription outputBufferDescription = new BufferDescription
+        //    //{
+        //    //    BindFlags = BindFlags.UnorderedAccess | BindFlags.ShaderResource,
+        //    //    OptionFlags = ResourceOptionFlags.StructuredBuffer,
+        //    //    SizeInBytes = bufferSizeInBytes,
+        //    //    StructureByteStride = sizeof(float),
+        //    //    Usage = ResourceUsage.Default,
+        //    //};
+        //    //Buffer outputBuffer = new Buffer(device, outputBufferDescription);
+        //    //UnorderedAccessViewDescription outputViewDescription = new UnorderedAccessViewDescription
+        //    //{
+        //    //    ElementCount = elementCount,
+        //    //    Format = SlimDX.DXGI.Format.Unknown,
+        //    //    Dimension = UnorderedAccessViewDimension.Buffer
+        //    //};
+        //    //UnorderedAccessView outputView = new UnorderedAccessView(device, outputBuffer, outputViewDescription);
 
-            //device.ImmediateContext.ComputeShader.Set(computeShader);
-            //device.ImmediateContext.ComputeShader.SetUnorderedAccessView(outputView, 0);
-            //device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
+        //    //device.ImmediateContext.ComputeShader.Set(computeShader);
+        //    //device.ImmediateContext.ComputeShader.SetUnorderedAccessView(outputView, 0);
+        //    //device.ImmediateContext.ComputeShader.SetConstantBuffer(inputBuffer, 0);
 
-            //// Compute shaders execute on multiple threads at the same time. Those execution
-            //// threads are grouped; Dispatch() indicates how many groups in the X, Y and Z
-            //// dimension will be utilized. The shader itself specified how many threads per
-            //// group (also in X, Y and Z dimensions) to use via the [numthreads] attribute.
-            //// In this sample, one thread group will be used with 16 threads, each thread
-            //// will process one element of the input data.
-            //device.ImmediateContext.Dispatch(1, 1, 1);
+        //    //// Compute shaders execute on multiple threads at the same time. Those execution
+        //    //// threads are grouped; Dispatch() indicates how many groups in the X, Y and Z
+        //    //// dimension will be utilized. The shader itself specified how many threads per
+        //    //// group (also in X, Y and Z dimensions) to use via the [numthreads] attribute.
+        //    //// In this sample, one thread group will be used with 16 threads, each thread
+        //    //// will process one element of the input data.
+        //    //device.ImmediateContext.Dispatch(1, 1, 1);
 
-            //device.ImmediateContext.CopyResource(outputBuffer, stagingBuffer);
-            //DataBox output = device.ImmediateContext.MapSubresource(stagingBuffer, MapMode.Read, MapFlags.None);
+        //    //device.ImmediateContext.CopyResource(outputBuffer, stagingBuffer);
+        //    //DataBox output = device.ImmediateContext.MapSubresource(stagingBuffer, MapMode.Read, MapFlags.None);
 
-            //Console.Write("Results:");
-            //for (int index = 0; index < elementCount; ++index)
-            //    Console.Write(" {0}", output.Data.Read<float>());
-            //device.ImmediateContext.UnmapSubresource(outputBuffer, 0);
-            //Console.WriteLine();
+        //    //Console.Write("Results:");
+        //    //for (int index = 0; index < elementCount; ++index)
+        //    //    Console.Write(" {0}", output.Data.Read<float>());
+        //    //device.ImmediateContext.UnmapSubresource(outputBuffer, 0);
+        //    //Console.WriteLine();
 
-            //computeShader.Dispose();
-            //outputView.Dispose();
-            //outputBuffer.Dispose();
-            //stagingBuffer.Dispose();
-            //inputBuffer.Dispose();
-            //device.Dispose();
+        //    //computeShader.Dispose();
+        //    //outputView.Dispose();
+        //    //outputBuffer.Dispose();
+        //    //stagingBuffer.Dispose();
+        //    //inputBuffer.Dispose();
+        //    //device.Dispose();
 
-            //return true;
-        }
+        //    //return true;
+        //}
     }
 }
