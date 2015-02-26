@@ -350,7 +350,7 @@ void parallelMax(
 
 	} while (readInputIx < inputsFinished);
 	
-	//outputArray[tid] = tid;//sdata[tid];
+	//outputArray[tid] = currentImageIx;// tid;//sdata[tid];
 
 	//sync up -- now we have to reduce our mdata/sdata according to maximums
 	GroupMemoryBarrierWithGroupSync();
@@ -519,7 +519,7 @@ void parallelMax(
 
 		//are you the max AND the correct choice?
 		float fTarget = (writeInputIx - input_startIx == targetIx ? correctTarget : incorrectTarget);
-		outputArray[outputIx] = fTarget - inputArray[outputIx];
+		outputArray[outputIx] = min(1.0, max(-1, fTarget - inputArray[outputIx]));
 		//if(tid == 0)
 		//{
 		//	outputArray[0] = mdata[0];//fTarget;// outputIx;//layerDefinition[LayerInputStartIx];//outputIx;//
@@ -529,16 +529,15 @@ void parallelMax(
 		//}
 		//are you the max AND you're the correct choice?
 		fTarget = (writeInputIx + groupDim_x  - input_startIx == targetIx ? correctTarget : incorrectTarget);
-		outputArray[outputIx + groupDim_x] = fTarget - inputArray[outputIx + groupDim_x];
-		//if(tid == 0)
-		//	outputArray[5] = fTarget;
+		outputArray[outputIx + groupDim_x] = min(1.0, max(-1, fTarget - inputArray[outputIx + groupDim_x]));
+	
 		writeInputIx += dispatchSize; 
 		outputIx += dispatchSize; 
 
 	} while (writeInputIx < inputsFinished);
 	//outputArray[tid] = sdata[tid];
 
-	GroupMemoryBarrierWithGroupSync(); 
+	//GroupMemoryBarrierWithGroupSync(); 
 
 	//if(tid == 0){
 	//	outputArray[0] = mdata[0];// outputIx;//layerDefinition[LayerInputStartIx];//outputIx;//mdata[0];
