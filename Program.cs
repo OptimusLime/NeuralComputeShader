@@ -541,7 +541,7 @@ namespace ComputeShader11
         const int MAX_LAYERS = 16;
 
 
-        static int[] defaultLayerSizes = new int[] { 1500, 1000, 500, 500, 10 };
+        static int[] defaultLayerSizes = new int[] { 2500, 10 };
 
         static void MultiLayerNetwork()
         {
