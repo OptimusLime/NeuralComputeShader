@@ -37,7 +37,18 @@ RWStructuredBuffer<int> image_labels;
 groupshared float sdata[groupDim_x];
 groupshared int mdata[groupDim_x];
 
-void finishSharedDataSum(int tid, RWStructuredBuffer<float> outputArray, int outputIx)
+
+float bipolarSigmoid(float val)
+{
+	return 2/(1 + exp(-val)) - 1;
+}
+
+float plainSigmoid(float val)
+{
+	return 1/(1 + exp(-val));
+}
+
+void finishSharedDataSum(int tid, RWStructuredBuffer<float> outputArray, int outputIx, bool activate)
 {
 	if (groupDim_x>= 512) { if (tid < 256) { sdata[tid] += sdata[tid + 256]; } GroupMemoryBarrierWithGroupSync(); }
 	
@@ -94,7 +105,10 @@ void finishSharedDataSum(int tid, RWStructuredBuffer<float> outputArray, int out
 	}
 	
 	if (tid == 0) {
-		outputArray[outputIx] = sdata[0];
+		if(activate)
+			outputArray[outputIx] = plainSigmoid(sdata[0]);
+		else
+			outputArray[outputIx] = sdata[0];
 	}
 }
 
@@ -105,6 +119,8 @@ void finishSharedDataSum(int tid, RWStructuredBuffer<float> outputArray, int out
 //	node_error_data[tid] = weightArray[weightIx];
 //}
 	 	
+
+
 
 
 //here we simply proceed to run a layer for each thread
@@ -150,13 +166,6 @@ void runLayer(	uint3 threadIdx,
 	do{
 	 	sdata[tid] += weightArray[weightIx]*inputArray[inputIx] + weightArray[weightIx+groupDim_x]*inputArray[inputIx+groupDim_x]; 
 
-	 	//if(groupIdx.x == 0)
-		//{
-		//	node_error_data[etid] = inputArray[inputIx];
-		//	node_error_data[etid+groupDim_x] = inputArray[inputIx + groupDim_x];
-		//	etid += dispatchSize;
-		//}
-
 		inputIx += dispatchSize; 
 		weightIx += dispatchSize; 
 
@@ -165,9 +174,10 @@ void runLayer(	uint3 threadIdx,
 	GroupMemoryBarrierWithGroupSync();
 	
 	//now that its been read into shared memory, finish the sum normally, storing into outputIx
-	finishSharedDataSum(tid, outputArray, outputIx);
+	
+	//we do want activation after the calculation
+	finishSharedDataSum(tid, outputArray, outputIx, true);
 
-	//GroupMemoryBarrierWithGroupSync();
 }
 
 void calculateLayerError(	
@@ -220,7 +230,7 @@ void calculateLayerError(
 	GroupMemoryBarrierWithGroupSync();
 	
 	//now that its been read into shared memory, finish the sum normally, storing into outputIx
-	finishSharedDataSum(tid, outputArray, outputIx);
+	finishSharedDataSum(tid, outputArray, outputIx, false);
 }
 
 //here we simply proceed to run a layer for each thread
@@ -520,13 +530,7 @@ void parallelMax(
 		//are you the max AND the correct choice?
 		float fTarget = (writeInputIx - input_startIx == targetIx ? correctTarget : incorrectTarget);
 		outputArray[outputIx] = min(1.0, max(-1, fTarget - inputArray[outputIx]));
-		//if(tid == 0)
-		//{
-		//	outputArray[0] = mdata[0];//fTarget;// outputIx;//layerDefinition[LayerInputStartIx];//outputIx;//
-		//	outputArray[1] = sdata[1];//targetIx;
-		//	outputArray[2] = mdata[0] - input_startIx;//- input_startIx;//writeInputIx;
-		//	outputArray[3] = currentImageIx;// mdata[0] - input_startIx;//- input_startIx;//writeInputIx;
-		//}
+		
 		//are you the max AND you're the correct choice?
 		fTarget = (writeInputIx + groupDim_x  - input_startIx == targetIx ? correctTarget : incorrectTarget);
 		outputArray[outputIx + groupDim_x] = min(1.0, max(-1, fTarget - inputArray[outputIx + groupDim_x]));
@@ -535,16 +539,7 @@ void parallelMax(
 		outputIx += dispatchSize; 
 
 	} while (writeInputIx < inputsFinished);
-	//outputArray[tid] = sdata[tid];
-
-	//GroupMemoryBarrierWithGroupSync(); 
-
-	//if(tid == 0){
-	//	outputArray[0] = mdata[0];// outputIx;//layerDefinition[LayerInputStartIx];//outputIx;//mdata[0];
-	//	outputArray[2] = sdata[0];//layerDefinition[LayerInputSizeIx];//inputIx;// sdata[0];
-	//	outputArray[1] = mdata[0] - input_startIx;//layerDefinition[LayerWeightStartIx];//inputIx;// sdata[0];
-	//	outputArray[3] = layerDefinition[LayerOutputStartIx];//inputIx;// sdata[0];
-	//}
+	
 }
 
 [numthreads( groupDim_x, 1, 1)]
@@ -557,12 +552,7 @@ void runNetwork(uint index : SV_GroupIndex, uint3 threadIdx: SV_GroupThreadID, u
 	if(runBackprop == 0)
 	{
 		//every thread takes this path when true
-		//if(currentLayerIx == 0)
-		//{	
-			//we start at a particular image
-		//	layerDefinition[LayerInputStartIx] = currentImageIx*layerDefinition[LayerInputSizeIx];
-		//}
-
+	
 		//our arrays are set according to layer - I would do and if/else statement and set a pointer
 		//put shader code doesn't allow this
 		if(currentLayerIx == 0)
